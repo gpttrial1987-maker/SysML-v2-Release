@@ -421,7 +421,7 @@
       raw?.specializations?.[0]?.classifierId,
       raw?.specializations?.[0]?.payload?.["@type"],
       raw?.type,
-      raw?.@type,
+      raw?.["@type"],
     );
 
     const kind = simplifyClassifier(classifier);
