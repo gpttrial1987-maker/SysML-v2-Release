@@ -8,6 +8,9 @@
     "build": "echo 'TypeScript sources only \u2013 no build step configured.'",
     "test": "vitest run"
   },
+  "dependencies": {
+    "elkjs": "^0.8.2"
+  },
   "devDependencies": {
     "@types/node": "^20.16.3",
     "typescript": "^5.5.4",
