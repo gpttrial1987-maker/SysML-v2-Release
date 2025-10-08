@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SysML v2 Web Editor</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.9/codemirror.min.css" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <h1>SysML v2 Web Editor</h1>
+      <nav class="toolbar">
+        <button id="btn-new" type="button">New Model</button>
+        <button id="btn-open" type="button">Open...</button>
+        <button id="btn-save" type="button">Download</button>
+        <button id="btn-insert" type="button">Insert Template</button>
+        <label class="theme-toggle">
+          <input type="checkbox" id="toggle-theme" />
+          <span>Dark theme</span>
+        </label>
+        <input id="file-input" type="file" accept=".sysml,.txt,.kerml,.kerml2,.md,.json" hidden />
+      </nav>
+    </header>
+    <main class="layout">
+      <section class="editor-pane">
+        <textarea id="editor" aria-label="SysML model editor"></textarea>
+      </section>
+      <aside class="side-pane">
+        <section class="panel">
+          <h2>Model Outline</h2>
+          <ul id="outline" aria-live="polite"></ul>
+        </section>
+        <section class="panel">
+          <h2>Validation</h2>
+          <p id="validation-status" class="status">Start typing to validate your model.</p>
+        </section>
+        <section class="panel">
+          <h2>Help</h2>
+          <p>
+            Use this lightweight editor to sketch SysML v2 textual models. Download your
+            work as a <code>.sysml</code> file or paste it into other SysML v2 tooling.
+          </p>
+          <p>
+            The outline is generated heuristically from key declarations such as
+            <code>package</code>, <code>part</code>, <code>interface</code>, and
+            <code>action</code> blocks.
+          </p>
+        </section>
+      </aside>
+    </main>
+    <footer class="app-footer">
+      <span>SysML v2 Web Editor — Experimental utility for quick prototyping</span>
+    </footer>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.9/codemirror.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.9/mode/clike/clike.min.js"></script>
+    <script src="editor.js"></script>
+  </body>
+</html>
