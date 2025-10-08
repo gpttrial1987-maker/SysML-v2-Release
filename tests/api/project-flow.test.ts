@@ -59,7 +59,7 @@ describeIfApi('Project and commit flows', () => {
 
   testIfApi('lists commits including the new commit', async () => {
     if (!latestCommitId) {
-      fail('Commit was not created in previous step');
+      throw new Error('Commit was not created in previous step');
     }
     const commits = await sdk.listCommits({ projectId, branchId: defaultBranch, limit: 5 });
     const ids = commits.items.map((item) => item.id);
