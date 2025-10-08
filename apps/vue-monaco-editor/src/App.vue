@@ -30,6 +30,95 @@
           </div>
           <p v-if="lastValidated" class="last-run">Last checked {{ lastValidated }}</p>
         </section>
+        <section class="outline-section">
+          <div class="outline-header">
+            <h2>Outline</h2>
+            <button
+              type="button"
+              class="outline-refresh"
+              @click="refreshOutline"
+              :disabled="outlineLoading || !outlineReadyToLoad"
+            >
+              {{ outlineLoading ? 'Refreshing…' : 'Refresh' }}
+            </button>
+          </div>
+          <div class="outline-config">
+            <label>
+              API base URL
+              <input
+                v-model="sysmlApiBaseUrl"
+                type="url"
+                placeholder="http://localhost:9000/api"
+                spellcheck="false"
+              />
+            </label>
+            <label>
+              Project ID
+              <input
+                v-model="outlineProjectId"
+                type="text"
+                placeholder="project-id"
+                spellcheck="false"
+              />
+            </label>
+            <label>
+              Commit ID
+              <input
+                v-model="outlineCommitId"
+                type="text"
+                placeholder="commit-id"
+                spellcheck="false"
+              />
+            </label>
+            <label>
+              Root element ID
+              <input
+                v-model="outlineRootElementId"
+                type="text"
+                placeholder="element identifier"
+                spellcheck="false"
+              />
+            </label>
+          </div>
+          <div class="outline-body">
+            <p v-if="!outlineReadyToLoad" class="outline-hint">
+              Provide the API base URL, project ID, commit ID, and root element ID to load the outline.
+            </p>
+            <p v-else-if="outlineError" class="outline-error">{{ outlineError }}</p>
+            <p v-else-if="outlineLoading && !outlineItems.length" class="outline-status">Loading outline…</p>
+            <ul
+              v-else-if="outlineItems.length"
+              class="outline-list"
+              role="tree"
+              aria-label="Model outline"
+            >
+              <li
+                v-for="item in outlineItems"
+                :key="item.node.key"
+                role="treeitem"
+                :aria-level="item.depth + 1"
+                :aria-selected="outlineSelectedKey === item.node.key"
+              >
+                <button
+                  type="button"
+                  class="outline-node"
+                  :class="{ active: outlineSelectedKey === item.node.key }"
+                  :style="{ paddingLeft: `${item.depth * 16 + 12}px` }"
+                  :disabled="!item.node.range"
+                  @click="handleOutlineClick(item.node)"
+                  :data-outline-key="item.node.key"
+                  :title="outlineNodeTooltip(item.node)"
+                >
+                  <span class="outline-label">{{ item.node.label }}</span>
+                  <span v-if="formatOutlineType(item.node.type)" class="outline-meta">
+                    {{ formatOutlineType(item.node.type) }}
+                  </span>
+                </button>
+              </li>
+            </ul>
+            <p v-else class="outline-status">No owned elements were returned.</p>
+          </div>
+        </section>
         <section>
           <h2>Diagnostics</h2>
           <ul v-if="diagnostics.length" class="validation-list">
@@ -55,7 +144,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import loader from '@monaco-editor/loader';
 
 import type * as Monaco from 'monaco-editor';
@@ -85,6 +174,39 @@ interface NormalizedIssue {
   range: NormalizedRange;
   quickFixes: NormalizedFix[];
   elementId?: string;
+}
+
+interface ApiElementRecord {
+  id: string;
+  name?: string;
+  classifierId?: string;
+  documentation?: string;
+  payload?: Record<string, unknown>;
+}
+
+interface OutlineNode {
+  key: string;
+  id: string;
+  label: string;
+  type?: string;
+  range?: NormalizedRange;
+  children: OutlineNode[];
+}
+
+interface OutlineListItem {
+  node: OutlineNode;
+  depth: number;
+}
+
+interface OutlineConfig {
+  baseUrl: string;
+  projectId: string;
+  commitId: string;
+}
+
+interface OutlinePosition {
+  line: number;
+  column: number;
 }
 
 const defaultModel = `package Example::DriveUnit {
@@ -117,6 +239,39 @@ const validationEndpoint = ref(
   import.meta.env.VITE_VALIDATION_URL ?? 'http://localhost:9000/api/validation',
 );
 
+const sysmlApiBaseUrl = ref(import.meta.env.VITE_SYSML_API_URL ?? 'http://localhost:9000/api');
+const outlineProjectId = ref(import.meta.env.VITE_SYSML_PROJECT_ID ?? '');
+const outlineCommitId = ref(import.meta.env.VITE_SYSML_COMMIT_ID ?? '');
+const outlineRootElementId = ref(import.meta.env.VITE_SYSML_ROOT_ELEMENT_ID ?? '');
+const outlineLoading = ref(false);
+const outlineError = ref<string | null>(null);
+const outlineRoot = ref<OutlineNode | null>(null);
+const outlineSelectedKey = ref<string | null>(null);
+
+const outlineReadyToLoad = computed(
+  () =>
+    sysmlApiBaseUrl.value.trim().length > 0 &&
+    outlineProjectId.value.trim().length > 0 &&
+    outlineCommitId.value.trim().length > 0 &&
+    outlineRootElementId.value.trim().length > 0,
+);
+
+const outlineItems = computed<OutlineListItem[]>(() => {
+  const rootNode = outlineRoot.value;
+  if (!rootNode) {
+    return [];
+  }
+  const items: OutlineListItem[] = [];
+  const visit = (node: OutlineNode, depth: number) => {
+    items.push({ node, depth });
+    for (const child of node.children) {
+      visit(child, depth + 1);
+    }
+  };
+  visit(rootNode, 0);
+  return items;
+});
+
 const monacoRoot = ref<HTMLDivElement | null>(null);
 const editorRef = shallowRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
 
@@ -131,6 +286,15 @@ let modelDisposables: Monaco.IDisposable[] = [];
 let quickFixCommandId: string | null = null;
 let currentDiagnostics: NormalizedIssue[] = [];
 let idIndex = new Map<string, NormalizedRange>();
+let outlineDecorations: string[] = [];
+let outlineAbortController: AbortController | null = null;
+let outlineConfigTimer: ReturnType<typeof setTimeout> | null = null;
+let ignoreEditorSelection = false;
+const outlineNodeIndex = new Map<string, OutlineNode>();
+const outlineNodesWithRange: OutlineNode[] = [];
+const outlineNodesByElementId = new Map<string, OutlineNode[]>();
+const outlineElementCache = new Map<string, ApiElementRecord>();
+const outlineOwnedCache = new Map<string, ApiElementRecord[]>();
 
 onMounted(async () => {
   loader.config({
@@ -183,11 +347,57 @@ onMounted(async () => {
 
   updateIdIndex(model.getValue());
   scheduleValidation(true);
+  modelDisposables.push(
+    editor.onDidChangeCursorSelection((event) => {
+      if (ignoreEditorSelection) {
+        return;
+      }
+      const position: OutlinePosition = {
+        line: event.selection.startLineNumber,
+        column: event.selection.startColumn,
+      };
+      const node = findOutlineNodeByPosition(position);
+      if (node) {
+        if (outlineSelectedKey.value !== node.key) {
+          outlineSelectedKey.value = node.key;
+        }
+      } else if (outlineSelectedKey.value) {
+        outlineSelectedKey.value = null;
+      }
+    }),
+  );
 });
+
+watch(
+  [sysmlApiBaseUrl, outlineProjectId, outlineCommitId, outlineRootElementId],
+  () => {
+    if (outlineConfigTimer) {
+      clearTimeout(outlineConfigTimer);
+    }
+    outlineConfigTimer = setTimeout(() => {
+      if (outlineReadyToLoad.value) {
+        refreshOutline().catch((error) => {
+          console.error('Outline refresh error', error);
+        });
+      } else {
+        resetOutlineState();
+      }
+    }, 400);
+  },
+  { immediate: true },
+);
 
 onBeforeUnmount(() => {
   if (validationTimer) {
     clearTimeout(validationTimer);
+  }
+  if (outlineConfigTimer) {
+    clearTimeout(outlineConfigTimer);
+    outlineConfigTimer = null;
+  }
+  if (outlineAbortController) {
+    outlineAbortController.abort();
+    outlineAbortController = null;
   }
   for (const disposable of modelDisposables) {
     disposable.dispose();
@@ -199,10 +409,540 @@ onBeforeUnmount(() => {
     if (model && monacoApi) {
       monacoApi.editor.setModelMarkers(model, 'sysml-validation', []);
     }
+    if (outlineDecorations.length) {
+      editor.deltaDecorations(outlineDecorations, []);
+      outlineDecorations = [];
+    }
     editor.dispose();
     editorRef.value = null;
   }
 });
+
+async function refreshOutline(): Promise<void> {
+  const config = getOutlineConfig();
+  const elementId = outlineRootElementId.value.trim();
+  if (!config || !elementId) {
+    resetOutlineState();
+    return;
+  }
+
+  const previousElementId = outlineSelectedKey.value
+    ? outlineNodeIndex.get(outlineSelectedKey.value)?.id ?? null
+    : null;
+
+  outlineError.value = null;
+  outlineLoading.value = true;
+  outlineElementCache.clear();
+  outlineOwnedCache.clear();
+
+  if (outlineAbortController) {
+    outlineAbortController.abort();
+  }
+  const controller = new AbortController();
+  outlineAbortController = controller;
+  const { signal } = controller;
+
+  try {
+    const rootRecord = await fetchElementRecord(elementId, config, signal);
+    const rootNode = await buildOutlineNodeFromRecord(
+      rootRecord,
+      createOutlineKey(null, rootRecord.id, 0),
+      config,
+      signal,
+      new Set<string>(),
+    );
+    if (signal.aborted || outlineAbortController !== controller) {
+      return;
+    }
+
+    outlineRoot.value = rootNode;
+    rebuildOutlineIndexes(rootNode);
+
+    let nextSelectionKey: string | null = null;
+    if (previousElementId) {
+      const candidates = outlineNodesByElementId.get(previousElementId);
+      if (candidates && candidates.length) {
+        nextSelectionKey = candidates[0].key;
+      }
+    }
+    if (!nextSelectionKey && rootNode.range) {
+      nextSelectionKey = rootNode.key;
+    }
+    outlineSelectedKey.value = nextSelectionKey;
+  } catch (error) {
+    if (signal.aborted) {
+      return;
+    }
+    outlineError.value = error instanceof Error ? error.message : 'Failed to load outline.';
+    outlineRoot.value = null;
+    rebuildOutlineIndexes(null);
+    outlineSelectedKey.value = null;
+  } finally {
+    if (outlineAbortController === controller) {
+      outlineLoading.value = false;
+      outlineAbortController = null;
+    }
+  }
+}
+
+function resetOutlineState() {
+  outlineError.value = null;
+  outlineRoot.value = null;
+  outlineSelectedKey.value = null;
+  outlineLoading.value = false;
+  rebuildOutlineIndexes(null);
+  applyOutlineHighlight(undefined);
+}
+
+function getOutlineConfig(): OutlineConfig | null {
+  const base = sysmlApiBaseUrl.value.trim();
+  const project = outlineProjectId.value.trim();
+  const commit = outlineCommitId.value.trim();
+  if (!base || !project || !commit) {
+    return null;
+  }
+  return {
+    baseUrl: base.replace(/\/+$/, ''),
+    projectId: project,
+    commitId: commit,
+  };
+}
+
+async function buildOutlineNodeFromRecord(
+  record: ApiElementRecord,
+  key: string,
+  config: OutlineConfig,
+  signal: AbortSignal,
+  visited: Set<string>,
+): Promise<OutlineNode> {
+  if (signal.aborted) {
+    throw new DOMException('Outline request aborted', 'AbortError');
+  }
+
+  const sanitized = sanitizeElementRecord(record);
+  const node: OutlineNode = {
+    key,
+    id: sanitized.id,
+    label: computeOutlineLabel(sanitized),
+    type: computeOutlineType(sanitized),
+    range: extractOutlineRange(sanitized),
+    children: [],
+  };
+
+  if (visited.has(node.id)) {
+    return node;
+  }
+  visited.add(node.id);
+
+  const children = await fetchOwnedElementRecords(node.id, config, signal);
+  const childNodes: OutlineNode[] = [];
+  for (let index = 0; index < children.length; index += 1) {
+    const childRecord = children[index];
+    const childKey = createOutlineKey(key, childRecord.id, index);
+    const childNode = await buildOutlineNodeFromRecord(childRecord, childKey, config, signal, visited);
+    childNodes.push(childNode);
+  }
+  node.children = childNodes;
+  return node;
+}
+
+async function fetchElementRecord(
+  elementId: string,
+  config: OutlineConfig,
+  signal: AbortSignal,
+): Promise<ApiElementRecord> {
+  const cached = outlineElementCache.get(elementId);
+  if (cached) {
+    return cached;
+  }
+  const url = buildElementUrl(config, elementId);
+  const payload = await requestJson(url, signal);
+  const record = parseElementRecord(payload);
+  outlineElementCache.set(record.id, record);
+  return record;
+}
+
+async function fetchOwnedElementRecords(
+  elementId: string,
+  config: OutlineConfig,
+  signal: AbortSignal,
+): Promise<ApiElementRecord[]> {
+  const cached = outlineOwnedCache.get(elementId);
+  if (cached) {
+    return cached;
+  }
+  const url = buildElementUrl(config, elementId, 'owned-elements');
+  const payload = await requestJson(url, signal);
+  const records = parseOwnedElements(payload);
+  outlineOwnedCache.set(elementId, records);
+  for (const record of records) {
+    if (!outlineElementCache.has(record.id)) {
+      outlineElementCache.set(record.id, record);
+    }
+  }
+  return records;
+}
+
+function buildElementUrl(config: OutlineConfig, elementId?: string, suffix?: string) {
+  let url = `${config.baseUrl}/projects/${encodeURIComponent(config.projectId)}/commits/${encodeURIComponent(
+    config.commitId,
+  )}/elements`;
+  if (elementId) {
+    url += `/${encodeURIComponent(elementId)}`;
+  }
+  if (suffix) {
+    url += `/${suffix}`;
+  }
+  return url;
+}
+
+async function requestJson(url: string, signal: AbortSignal): Promise<unknown> {
+  const response = await fetch(url, { signal });
+  if (response.status === 204) {
+    if (!response.ok) {
+      throw new Error(`Request failed with status ${response.status}`);
+    }
+    return null;
+  }
+  const text = await response.text();
+  let data: unknown = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch (error) {
+      throw new Error(`Response from ${url} was not valid JSON.`);
+    }
+  }
+  if (!response.ok) {
+    const message = isRecord(data) && typeof data.message === 'string'
+      ? data.message
+      : `Request failed with status ${response.status}`;
+    throw new Error(message);
+  }
+  return data;
+}
+
+function parseElementRecord(payload: unknown): ApiElementRecord {
+  if (!isRecord(payload) || !isRecord(payload.data) || typeof payload.data.id !== 'string') {
+    throw new Error('Unexpected element response shape.');
+  }
+  const data = payload.data as Record<string, unknown>;
+  return sanitizeElementRecord({
+    id: data.id as string,
+    name: typeof data.name === 'string' ? data.name : undefined,
+    classifierId: typeof data.classifierId === 'string' ? data.classifierId : undefined,
+    documentation: typeof data.documentation === 'string' ? data.documentation : undefined,
+    payload: isRecord(data.payload) ? (data.payload as Record<string, unknown>) : undefined,
+  });
+}
+
+function parseOwnedElements(payload: unknown): ApiElementRecord[] {
+  if (!isRecord(payload) || !Array.isArray(payload.items)) {
+    return [];
+  }
+  const results: ApiElementRecord[] = [];
+  for (const entry of payload.items) {
+    if (!isRecord(entry) || typeof entry.id !== 'string') {
+      continue;
+    }
+    results.push(
+      sanitizeElementRecord({
+        id: entry.id,
+        name: typeof entry.name === 'string' ? entry.name : undefined,
+        classifierId: typeof entry.classifierId === 'string' ? entry.classifierId : undefined,
+        documentation: typeof entry.documentation === 'string' ? entry.documentation : undefined,
+        payload: isRecord(entry.payload) ? (entry.payload as Record<string, unknown>) : undefined,
+      }),
+    );
+  }
+  return results;
+}
+
+function sanitizeElementRecord(record: ApiElementRecord): ApiElementRecord {
+  return {
+    id: record.id,
+    name: typeof record.name === 'string' ? record.name : undefined,
+    classifierId: typeof record.classifierId === 'string' ? record.classifierId : undefined,
+    documentation: typeof record.documentation === 'string' ? record.documentation : undefined,
+    payload: isRecord(record.payload) ? record.payload : undefined,
+  };
+}
+
+function createOutlineKey(parentKey: string | null, elementId: string, index: number): string {
+  const safeId = elementId.replace(/[^A-Za-z0-9_-]/g, '_');
+  if (parentKey) {
+    return `${parentKey}-${index}-${safeId}`;
+  }
+  return `root-${safeId}`;
+}
+
+function computeOutlineLabel(record: ApiElementRecord): string {
+  const payload = record.payload;
+  const nested = payload && isRecord(payload.payload) ? (payload.payload as Record<string, unknown>) : undefined;
+  return (
+    firstString(
+      record.name,
+      payload?.declaredName,
+      payload?.declaredShortName,
+      payload?.name,
+      nested?.declaredName,
+      nested?.declaredShortName,
+      nested?.name,
+    ) ?? record.id
+  );
+}
+
+function computeOutlineType(record: ApiElementRecord): string | undefined {
+  const payload = record.payload;
+  const nested = payload && isRecord(payload.payload) ? (payload.payload as Record<string, unknown>) : undefined;
+  return (
+    firstString(
+      record.classifierId,
+      payload?.classifierId,
+      nested?.classifierId,
+      payload?.['@type'],
+      nested?.['@type'],
+    ) ?? undefined
+  );
+}
+
+function extractOutlineRange(record: ApiElementRecord): NormalizedRange | undefined {
+  const payload = record.payload;
+  if (!payload) {
+    return undefined;
+  }
+  const candidate = findRangeCandidate(payload);
+  if (!candidate || !isRecord(candidate)) {
+    return undefined;
+  }
+  try {
+    return normalizeRange(candidate, record.name ?? record.id);
+  } catch (error) {
+    return undefined;
+  }
+}
+
+function findRangeCandidate(value: unknown, visited = new Set<unknown>()): unknown {
+  if (!value || typeof value !== 'object' || visited.has(value)) {
+    return undefined;
+  }
+  visited.add(value);
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const candidate = findRangeCandidate(entry, visited);
+      if (candidate) {
+        return candidate;
+      }
+    }
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const hasStartLine = 'startLine' in record || 'start' in record || 'line' in record || 'lineNumber' in record;
+  const hasEndLine = 'endLine' in record || 'end' in record || 'toLine' in record || 'lineEnd' in record;
+  const hasColumnInfo = 'startColumn' in record || 'column' in record || 'character' in record || 'offset' in record;
+  const hasLength = 'length' in record || 'endColumn' in record;
+  if (hasStartLine && (hasEndLine || hasColumnInfo || hasLength)) {
+    return record;
+  }
+  const preferredKeys = [
+    'source',
+    'textRange',
+    'range',
+    'span',
+    'location',
+    'ownedSource',
+    'body',
+    'ownedBody',
+    'ownedTextualRepresentation',
+    'textualRepresentation',
+  ];
+  for (const key of preferredKeys) {
+    if (key in record) {
+      const candidate = findRangeCandidate(record[key], visited);
+      if (candidate) {
+        return candidate;
+      }
+    }
+  }
+  for (const entry of Object.values(record)) {
+    const candidate = findRangeCandidate(entry, visited);
+    if (candidate) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function rebuildOutlineIndexes(root: OutlineNode | null) {
+  outlineNodeIndex.clear();
+  outlineNodesWithRange.length = 0;
+  outlineNodesByElementId.clear();
+  if (!root) {
+    return;
+  }
+  const visit = (node: OutlineNode) => {
+    outlineNodeIndex.set(node.key, node);
+    const existing = outlineNodesByElementId.get(node.id);
+    if (existing) {
+      existing.push(node);
+    } else {
+      outlineNodesByElementId.set(node.id, [node]);
+    }
+    if (node.range) {
+      outlineNodesWithRange.push(node);
+    }
+    for (const child of node.children) {
+      visit(child);
+    }
+  };
+  visit(root);
+}
+
+function handleOutlineClick(node: OutlineNode) {
+  outlineSelectedKey.value = node.key;
+  if (node.range) {
+    revealOutlineNode(node);
+  }
+}
+
+function revealOutlineNode(node: OutlineNode) {
+  if (!node.range) {
+    return;
+  }
+  focusEditorOnRange(node.range);
+}
+
+function focusEditorOnRange(range: NormalizedRange) {
+  if (!editorRef.value || !monacoApi) {
+    return;
+  }
+  const editor = editorRef.value;
+  const monacoRange = toMonacoRange(range, monacoApi);
+  ignoreEditorSelection = true;
+  editor.setSelection(monacoRange);
+  editor.revealRangeInCenterIfOutsideViewport(monacoRange, 2);
+  applyOutlineHighlight(range);
+  queueMicrotask(() => {
+    ignoreEditorSelection = false;
+  });
+}
+
+function applyOutlineHighlight(range: NormalizedRange | undefined) {
+  if (!editorRef.value || !monacoApi) {
+    return;
+  }
+  const editor = editorRef.value;
+  if (!range) {
+    if (outlineDecorations.length) {
+      outlineDecorations = editor.deltaDecorations(outlineDecorations, []);
+    }
+    return;
+  }
+  const monacoRange = toMonacoRange(range, monacoApi);
+  outlineDecorations = editor.deltaDecorations(outlineDecorations, [
+    {
+      range: monacoRange,
+      options: {
+        isWholeLine: true,
+        className: 'outline-highlight',
+        linesDecorationsClassName: 'outline-glyph',
+      },
+    },
+  ]);
+}
+
+watch(outlineSelectedKey, (key) => {
+  const node = key ? outlineNodeIndex.get(key) ?? null : null;
+  applyOutlineHighlight(node?.range);
+  if (key) {
+    nextTick(() => {
+      const button = document.querySelector<HTMLButtonElement>(`[data-outline-key="${key}"]`);
+      button?.scrollIntoView({ block: 'nearest' });
+    });
+  }
+});
+
+function formatOutlineType(type?: string): string {
+  if (!type) {
+    return '';
+  }
+  const trimmed = type.trim();
+  if (!trimmed) {
+    return '';
+  }
+  const parts = trimmed.split(':');
+  return parts[parts.length - 1];
+}
+
+function outlineNodeTooltip(node: OutlineNode): string {
+  const parts = [node.label];
+  const type = formatOutlineType(node.type);
+  if (type) {
+    parts.push(type);
+  }
+  if (node.range) {
+    parts.push(
+      `Lines ${node.range.startLineNumber}:${node.range.startColumn}–${node.range.endLineNumber}:${node.range.endColumn}`,
+    );
+  }
+  return parts.join(' · ');
+}
+
+function findOutlineNodeByPosition(position: OutlinePosition): OutlineNode | null {
+  let candidate: OutlineNode | null = null;
+  for (const node of outlineNodesWithRange) {
+    const range = node.range;
+    if (!range) {
+      continue;
+    }
+    if (!rangeContainsPosition(range, position)) {
+      continue;
+    }
+    if (!candidate) {
+      candidate = node;
+      continue;
+    }
+    const currentRange = candidate.range!;
+    if (rangeContainsRange(currentRange, range)) {
+      candidate = node;
+      continue;
+    }
+    if (!rangeContainsRange(range, currentRange) && rangeArea(range) <= rangeArea(currentRange)) {
+      candidate = node;
+    }
+  }
+  return candidate;
+}
+
+function rangeContainsPosition(range: NormalizedRange, position: OutlinePosition): boolean {
+  if (position.line < range.startLineNumber || position.line > range.endLineNumber) {
+    return false;
+  }
+  if (position.line === range.startLineNumber && position.column < range.startColumn) {
+    return false;
+  }
+  if (position.line === range.endLineNumber && position.column > range.endColumn) {
+    return false;
+  }
+  return true;
+}
+
+function rangeContainsRange(outer: NormalizedRange, inner: NormalizedRange): boolean {
+  return (
+    rangeContainsPosition(outer, { line: inner.startLineNumber, column: inner.startColumn }) &&
+    rangeContainsPosition(outer, { line: inner.endLineNumber, column: inner.endColumn })
+  );
+}
+
+function rangeArea(range: NormalizedRange): number {
+  const lineSpan = range.endLineNumber - range.startLineNumber;
+  const columnSpan = range.endColumn - range.startColumn;
+  return lineSpan * 1000 + columnSpan;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 function scheduleValidation(immediate = false) {
   if (!editorRef.value) {
