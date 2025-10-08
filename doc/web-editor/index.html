@@ -29,7 +29,38 @@
       <aside class="side-pane">
         <section class="panel">
           <h2>Model Outline</h2>
-          <ul id="outline" aria-live="polite"></ul>
+          <form id="outline-config" class="outline-config" autocomplete="off">
+            <label class="field">
+              <span class="field-label">API URL</span>
+              <input type="url" id="api-url" name="api-url" placeholder="https://api.example.com" />
+            </label>
+            <div class="outline-config-grid">
+              <label class="field">
+                <span class="field-label">Project</span>
+                <input type="text" id="project-id" name="project-id" placeholder="project-id" />
+              </label>
+              <label class="field">
+                <span class="field-label">Commit</span>
+                <input type="text" id="commit-id" name="commit-id" placeholder="commit-id" />
+              </label>
+              <label class="field">
+                <span class="field-label">Root element</span>
+                <input type="text" id="element-id" name="element-id" placeholder="element-id" />
+              </label>
+            </div>
+            <label class="field">
+              <span class="field-label">Token (optional)</span>
+              <input type="password" id="api-token" name="api-token" placeholder="Bearer token" autocomplete="off" />
+            </label>
+            <div class="outline-actions">
+              <button type="submit">Load outline</button>
+              <button type="button" id="outline-reset">Use editor outline</button>
+            </div>
+          </form>
+          <p id="outline-status" class="status info">
+            Outline is generated heuristically from the current editor content.
+          </p>
+          <ul id="outline" class="outline-tree" aria-live="polite"></ul>
         </section>
         <section class="panel">
           <h2>Validation</h2>
@@ -42,9 +73,10 @@
             work as a <code>.sysml</code> file or paste it into other SysML v2 tooling.
           </p>
           <p>
-            The outline is generated heuristically from key declarations such as
-            <code>package</code>, <code>part</code>, <code>interface</code>, and
-            <code>action</code> blocks.
+            Configure the outline panel above to load the model hierarchy from the
+            SysML v2 API. Selecting a node reveals its source range in the editor
+            and moving the caret in the editor highlights the corresponding node in
+            the outline.
           </p>
         </section>
       </aside>
