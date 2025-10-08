@@ -5,7 +5,12 @@
   "license": "LGPL-3.0-or-later",
   "type": "module",
   "scripts": {
-    "build": "echo 'TypeScript sources only – no build step configured.'",
-    "test": "echo 'No automated tests available.'"
+    "build": "echo 'TypeScript sources only \u2013 no build step configured.'",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^20.16.3",
+    "typescript": "^5.5.4",
+    "vitest": "^1.6.0"
   }
 }
