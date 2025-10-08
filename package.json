@@ -6,11 +6,21 @@
   "type": "module",
   "scripts": {
     "build": "echo 'TypeScript sources only \u2013 no build step configured.'",
-    "test": "vitest run"
+    "test": "vitest run",
+    "dev:editor": "vite --config apps/vue-monaco-editor/vite.config.ts",
+    "build:editor": "vite build --config apps/vue-monaco-editor/vite.config.ts",
+    "preview:editor": "vite preview --config apps/vue-monaco-editor/vite.config.ts"
+  },
+  "dependencies": {
+    "@monaco-editor/loader": "^1.4.0",
+    "monaco-editor": "^0.47.0",
+    "vue": "^3.4.37"
   },
   "devDependencies": {
     "@types/node": "^20.16.3",
+    "@vitejs/plugin-vue": "^5.0.5",
     "typescript": "^5.5.4",
+    "vite": "^5.3.4",
     "vitest": "^1.6.0"
   }
 }
