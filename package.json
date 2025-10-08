@@ -1,0 +1,11 @@
+{
+  "name": "sysml-sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK wrapper with lightweight runtime validation for the SysML v2 API.",
+  "license": "LGPL-3.0-or-later",
+  "type": "module",
+  "scripts": {
+    "build": "echo 'TypeScript sources only – no build step configured.'",
+    "test": "echo 'No automated tests available.'"
+  }
+}
