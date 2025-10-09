@@ -474,6 +474,139 @@ body {
   gap: 0.75rem;
 }
 
+.plantuml-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.plantuml-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.plantuml-header h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.plantuml-refresh {
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  border-radius: 0.5rem;
+  background: rgba(30, 41, 59, 0.7);
+  color: inherit;
+  font-size: 0.8125rem;
+  padding: 0.3rem 0.75rem;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.plantuml-refresh:not(:disabled):hover {
+  background: rgba(51, 65, 85, 0.85);
+}
+
+.plantuml-refresh:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.plantuml-config {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+}
+
+.plantuml-config label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  opacity: 0.85;
+}
+
+.plantuml-config input {
+  background: rgba(15, 23, 42, 0.8);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 0.5rem;
+  padding: 0.35rem 0.6rem;
+  color: inherit;
+  font-size: 0.8125rem;
+}
+
+.plantuml-body {
+  min-height: 200px;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 0.75rem;
+  padding: 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.plantuml-preview {
+  width: 100%;
+  max-height: 320px;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.plantuml-preview img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
+.plantuml-status,
+.plantuml-hint,
+.plantuml-error {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.plantuml-hint {
+  opacity: 0.75;
+}
+
+.plantuml-error {
+  color: #f87171;
+}
+
+.plantuml-source {
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.75rem;
+}
+
+.plantuml-source summary {
+  cursor: pointer;
+  font-weight: 600;
+  list-style: none;
+}
+
+.plantuml-source summary::-webkit-details-marker,
+.plantuml-source summary::marker {
+  display: none;
+}
+
+.plantuml-source pre {
+  margin: 0.5rem 0 0;
+  max-height: 240px;
+  overflow: auto;
+  background: transparent;
+  color: inherit;
+  font-family: 'Fira Code', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
 .wizard-section {
   display: flex;
   flex-direction: column;

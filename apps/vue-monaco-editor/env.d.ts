@@ -6,6 +6,7 @@ interface ImportMetaEnv {
   readonly VITE_SYSML_PROJECT_ID?: string;
   readonly VITE_SYSML_COMMIT_ID?: string;
   readonly VITE_SYSML_ROOT_ELEMENT_ID?: string;
+  readonly VITE_PLANTUML_SERVER_URL?: string;
 }
 
 interface ImportMeta {
