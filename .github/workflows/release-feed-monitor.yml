@@ -1,0 +1,175 @@
+name: Release feed monitor
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check-and-update:
+    name: Check release feeds
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Detect release updates
+        id: update
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            const lockPath = 'versions.lock';
+            const originalText = fs.readFileSync(lockPath, 'utf8');
+            const lines = originalText.split(/\r?\n/);
+            const hadTrailingNewline = lines[lines.length - 1] === '';
+            if (hadTrailingNewline) {
+              lines.pop();
+            }
+
+            const targets = new Map([
+              ['SysML-v2-Release', { owner: 'Systems-Modeling', repo: 'SysML-v2-Release' }],
+              ['SysML-v2-API-Services', { owner: 'Systems-Modeling', repo: 'SysML-v2-API-Services' }],
+            ]);
+
+            const normalize = (tag) => (tag || '').replace(/^v/, '');
+
+            const newLines = [];
+            const updates = [];
+            let changed = false;
+
+            for (const line of lines) {
+              const match = line.match(/^(\s*)([A-Za-z0-9._-]+):\s*(\S+)(\s+#.*)?$/);
+              if (!match) {
+                newLines.push(line);
+                continue;
+              }
+
+              const [, indent, name, value, comment = ''] = match;
+              const currentValue = value.trim();
+              if (!targets.has(name)) {
+                newLines.push(line);
+                continue;
+              }
+
+              const { owner, repo } = targets.get(name);
+              let latestTag = null;
+              let releaseUrl = null;
+
+              try {
+                const { data } = await github.repos.getLatestRelease({ owner, repo });
+                latestTag = data.tag_name ? data.tag_name.trim() : null;
+                releaseUrl = data.html_url || null;
+              } catch (error) {
+                if (error.status === 404) {
+                  core.warning(`No GitHub release found for ${owner}/${repo}; skipping ${name}.`);
+                  newLines.push(line);
+                  continue;
+                }
+
+                throw error;
+              }
+
+              if (!latestTag) {
+                newLines.push(line);
+                continue;
+              }
+
+              const normalizedCurrent = normalize(currentValue);
+              const normalizedLatest = normalize(latestTag);
+
+              if (normalizedCurrent === normalizedLatest) {
+                newLines.push(line);
+                continue;
+              }
+
+              let nextValue;
+              if (currentValue.startsWith('v') && !latestTag.startsWith('v')) {
+                nextValue = `v${normalizedLatest}`;
+              } else if (!currentValue.startsWith('v') && latestTag.startsWith('v')) {
+                nextValue = normalizedLatest;
+              } else {
+                nextValue = latestTag;
+              }
+
+              changed = true;
+              updates.push({
+                name,
+                from: currentValue,
+                to: nextValue,
+                url: releaseUrl || `https://github.com/${owner}/${repo}/releases/tag/${latestTag}`,
+              });
+
+              const commentSuffix = comment ? comment : '';
+              newLines.push(`${indent}${name}: ${nextValue}${commentSuffix}`);
+            }
+
+            if (changed) {
+              const finalText = newLines.join('\n') + (hadTrailingNewline ? '\n' : '');
+              fs.writeFileSync(lockPath, finalText, 'utf8');
+
+              const changelog = updates
+                .map((entry) => {
+                  const link = entry.url ? ` ([release notes](${entry.url}))` : '';
+                  return `- ${entry.name}: \`${entry.from}\` → \`${entry.to}\`${link}`;
+                })
+                .join('\n');
+              const summaryNames = updates.map((entry) => entry.name).join(', ');
+              const prTitle =
+                updates.length === 1
+                  ? `chore: update ${updates[0].name} release pin`
+                  : 'chore: update release pins';
+              const prBody = `## Summary\n- Update release pin(s) for ${summaryNames}.\n\n## Changelog\n${changelog}\n\n## Testing\n- npm test (compatibility suite)\n`;
+              const commitMessage =
+                updates.length === 1
+                  ? `chore: bump ${updates[0].name} release pin`
+                  : 'chore: bump release pins';
+              const branchSuffix = new Date().toISOString().replace(/[:.]/g, '-');
+
+              core.setOutput('changelog', changelog);
+              core.setOutput('pr-title', prTitle);
+              core.setOutput('pr-body', prBody);
+              core.setOutput('commit-message', commitMessage);
+              core.setOutput('branch-suffix', branchSuffix);
+            } else {
+              core.setOutput('changelog', '');
+              core.setOutput('pr-title', '');
+              core.setOutput('pr-body', '');
+              core.setOutput('commit-message', '');
+              core.setOutput('branch-suffix', '');
+            }
+
+            core.setOutput('changed', changed);
+
+      - name: Set up Node.js
+        if: steps.update.outputs.changed == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        if: steps.update.outputs.changed == 'true'
+        run: npm install
+
+      - name: Run compatibility tests
+        if: steps.update.outputs.changed == 'true'
+        run: npm test
+
+      - name: Create pull request
+        if: steps.update.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: automation/release-pins-${{ steps.update.outputs.branch-suffix }}
+          title: ${{ steps.update.outputs.pr-title }}
+          body: ${{ steps.update.outputs.pr-body }}
+          commit-message: ${{ steps.update.outputs.commit-message }}
+          add-paths: |
+            versions.lock
+          labels: |
+            automation
+            dependencies
