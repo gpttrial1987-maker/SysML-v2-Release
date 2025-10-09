@@ -161,10 +161,10 @@ function operationsConflict(left: DiffOperation, right: DiffOperation): boolean 
   }
 
   if (leftEmpty) {
-    return left.start >= right.start && left.start <= right.end;
+    return left.start >= right.start && left.start < right.end;
   }
 
-  return right.start >= left.start && right.start <= left.end;
+  return right.start >= left.start && right.start < left.end;
 }
 
 export function detectConflicts(leftOps: DiffOperation[], rightOps: DiffOperation[]): MergeConflict[] {
