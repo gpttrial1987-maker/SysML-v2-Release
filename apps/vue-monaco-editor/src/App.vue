@@ -117,6 +117,46 @@
               </li>
             </ul>
             <p v-else class="outline-status">No owned elements were returned.</p>
+            <div
+              v-if="selectedOutlineNode"
+              class="outline-rename-panel"
+              role="group"
+              aria-labelledby="outline-rename-label"
+            >
+              <div class="outline-rename-header">
+                <h3 id="outline-rename-label">Rename element</h3>
+                <p class="outline-rename-hint">Updates the element and all references via the API.</p>
+              </div>
+              <label class="outline-rename-field" for="outline-rename-input">
+                New name
+                <input
+                  id="outline-rename-input"
+                  v-model="renameDraft"
+                  type="text"
+                  :disabled="renameBusy"
+                  spellcheck="false"
+                />
+              </label>
+              <div class="outline-rename-actions">
+                <button
+                  type="button"
+                  class="outline-rename-submit"
+                  @click="submitRename"
+                  :disabled="renameBusy || !renameHasChanges"
+                >
+                  {{ renameBusy ? 'Renaming…' : 'Rename' }}
+                </button>
+                <button
+                  type="button"
+                  class="outline-rename-reset"
+                  @click="resetRenameDraft"
+                  :disabled="renameBusy"
+                >
+                  Reset
+                </button>
+              </div>
+              <p v-if="renameError" class="outline-error">{{ renameError }}</p>
+            </div>
           </div>
         </section>
         <section>
@@ -209,6 +249,16 @@ interface OutlinePosition {
   column: number;
 }
 
+interface TextEditPatch {
+  range: NormalizedRange;
+  text: string;
+}
+
+interface RenameRefactorResult {
+  patches: TextEditPatch[];
+  elements: ApiElementRecord[];
+}
+
 const defaultModel = `package Example::DriveUnit {
   part controller : Controller { id = ctrl_controller; }
   part motor : Motor { id = motor_primary; }
@@ -257,6 +307,9 @@ const outlineReadyToLoad = computed(
 );
 
 const outlineItems = computed<OutlineListItem[]>(() => {
+  // track updates to existing outline nodes without rebuilding the tree
+  // eslint-disable-next-line no-unused-expressions
+  outlineRevision.value;
   const rootNode = outlineRoot.value;
   if (!rootNode) {
     return [];
@@ -295,6 +348,26 @@ const outlineNodesWithRange: OutlineNode[] = [];
 const outlineNodesByElementId = new Map<string, OutlineNode[]>();
 const outlineElementCache = new Map<string, ApiElementRecord>();
 const outlineOwnedCache = new Map<string, ApiElementRecord[]>();
+const outlineRevision = ref(0);
+const renameDraft = ref('');
+const renameBusy = ref(false);
+const renameError = ref<string | null>(null);
+
+const selectedOutlineNode = computed(() =>
+  outlineSelectedKey.value ? outlineNodeIndex.get(outlineSelectedKey.value) ?? null : null,
+);
+
+const renameHasChanges = computed(() => {
+  const node = selectedOutlineNode.value;
+  if (!node) {
+    return false;
+  }
+  const draft = renameDraft.value.trim();
+  if (!draft) {
+    return false;
+  }
+  return draft !== node.label.trim();
+});
 
 onMounted(async () => {
   loader.config({
@@ -492,6 +565,7 @@ function resetOutlineState() {
   outlineLoading.value = false;
   rebuildOutlineIndexes(null);
   applyOutlineHighlight(undefined);
+  outlineRevision.value += 1;
 }
 
 function getOutlineConfig(): OutlineConfig | null {
@@ -583,6 +657,324 @@ async function fetchOwnedElementRecords(
   return records;
 }
 
+async function submitRename(): Promise<void> {
+  const node = selectedOutlineNode.value;
+  if (!node) {
+    return;
+  }
+  const proposed = renameDraft.value.trim();
+  if (!proposed) {
+    renameError.value = 'Provide a non-empty name.';
+    renameDraft.value = node.label;
+    return;
+  }
+  if (proposed === node.label.trim()) {
+    renameDraft.value = node.label;
+    return;
+  }
+
+  const config = getOutlineConfig();
+  if (!config) {
+    renameError.value = 'Provide API configuration before renaming.';
+    return;
+  }
+
+  renameBusy.value = true;
+  renameError.value = null;
+
+  const revertOutline = applyOutlineRenameOptimistic(node.id, proposed);
+
+  try {
+    const result = await requestRenameRefactor(node.id, proposed, config);
+    if (result.elements.length) {
+      updateOutlineFromRecords(result.elements);
+      const refreshed = selectedOutlineNode.value;
+      if (refreshed) {
+        renameDraft.value = refreshed.label;
+      }
+    } else {
+      const cached = outlineElementCache.get(node.id);
+      if (cached) {
+        outlineElementCache.set(node.id, { ...cached, name: proposed });
+      }
+      renameDraft.value = proposed;
+    }
+    if (result.patches.length) {
+      applyTextPatches(result.patches);
+    }
+  } catch (error) {
+    revertOutline();
+    const current = selectedOutlineNode.value;
+    renameDraft.value = current ? current.label : '';
+    if (!isAbortError(error)) {
+      renameError.value = error instanceof Error ? error.message : 'Rename failed.';
+    }
+    return;
+  } finally {
+    renameBusy.value = false;
+  }
+}
+
+function resetRenameDraft(): void {
+  const node = selectedOutlineNode.value;
+  renameDraft.value = node ? node.label : '';
+  renameError.value = null;
+}
+
+async function requestRenameRefactor(
+  elementId: string,
+  newName: string,
+  config: OutlineConfig,
+): Promise<RenameRefactorResult> {
+  const url = `${config.baseUrl}/projects/${encodeURIComponent(config.projectId)}/commits/${encodeURIComponent(
+    config.commitId,
+  )}/refactorings/rename`;
+  const controller = new AbortController();
+  const payload = await requestJson(url, controller.signal, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      elementId,
+      newName,
+      includeReferences: true,
+      updateReferences: true,
+    }),
+  });
+  if (!payload) {
+    return { patches: [], elements: [] };
+  }
+  return parseRenameResponse(payload);
+}
+
+function parseRenameResponse(payload: unknown): RenameRefactorResult {
+  if (!payload) {
+    return { patches: [], elements: [] };
+  }
+  if (!isRecord(payload)) {
+    throw new Error('Unexpected rename response shape.');
+  }
+  const root = isRecord(payload.data) ? (payload.data as Record<string, unknown>) : payload;
+  const container = isRecord(root.result) ? (root.result as Record<string, unknown>) : root;
+
+  const patchSources: unknown[] = [];
+  for (const key of ['patches', 'textEdits', 'edits', 'textChanges']) {
+    const candidate = container[key];
+    if (Array.isArray(candidate)) {
+      patchSources.push(...candidate);
+    }
+  }
+  const patches: TextEditPatch[] = [];
+  for (const entry of patchSources) {
+    const normalized = normalizeTextPatch(entry);
+    if (normalized) {
+      patches.push(normalized);
+    }
+  }
+
+  const elementSources: unknown[] = [];
+  for (const key of ['element', 'updatedElement', 'targetElement']) {
+    const candidate = container[key];
+    if (candidate) {
+      elementSources.push(candidate);
+    }
+  }
+  const list = container.updatedElements;
+  if (Array.isArray(list)) {
+    elementSources.push(...list);
+  }
+
+  const elements: ApiElementRecord[] = [];
+  for (const entry of elementSources) {
+    const normalized = normalizeElementRecordFromResponse(entry);
+    if (normalized) {
+      elements.push(normalized);
+    }
+  }
+
+  return { patches, elements };
+}
+
+function normalizeElementRecordFromResponse(value: unknown): ApiElementRecord | null {
+  if (!value) {
+    return null;
+  }
+  if (isRecord(value) && isRecord(value.data)) {
+    try {
+      return parseElementRecord({ data: value.data });
+    } catch (error) {
+      return null;
+    }
+  }
+  if (!isRecord(value) || typeof value.id !== 'string') {
+    return null;
+  }
+  return sanitizeElementRecord({
+    id: value.id,
+    name: typeof value.name === 'string' ? value.name : undefined,
+    classifierId: typeof value.classifierId === 'string' ? value.classifierId : undefined,
+    documentation: typeof value.documentation === 'string' ? value.documentation : undefined,
+    payload: isRecord(value.payload) ? (value.payload as Record<string, unknown>) : undefined,
+  });
+}
+
+function normalizeTextPatch(value: unknown): TextEditPatch | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const text = firstString(value.newText, value.text, value.replacementText, value.replacement, value.insertText, value.value);
+  if (typeof text !== 'string') {
+    return null;
+  }
+  const rangeSource = isRecord(value.range) ? (value.range as Record<string, unknown>) : value;
+  const start = extractPosition(rangeSource, ['start', 'from', 'begin']);
+  const end = extractPosition(rangeSource, ['end', 'to', 'finish']);
+  if (!start || !end) {
+    return null;
+  }
+  return {
+    range: {
+      startLineNumber: start.line,
+      startColumn: start.column,
+      endLineNumber: end.line,
+      endColumn: end.column,
+    },
+    text,
+  };
+}
+
+function extractPosition(source: Record<string, unknown>, keys: string[]): OutlinePosition | null {
+  for (const key of keys) {
+    const line = toInteger(
+      source[`${key}LineNumber`] ??
+        source[`${key}Line`] ??
+        source[`${key}Row`] ??
+        (isRecord(source[key]) ? (source[key] as Record<string, unknown>).line : undefined) ??
+        (isRecord(source[key]) ? (source[key] as Record<string, unknown>).lineNumber : undefined) ??
+        (isRecord(source[key]) ? (source[key] as Record<string, unknown>).row : undefined),
+    );
+    const column = toInteger(
+      source[`${key}Column`] ??
+        source[`${key}Character`] ??
+        source[`${key}Char`] ??
+        source[`${key}Offset`] ??
+        (isRecord(source[key]) ? (source[key] as Record<string, unknown>).column : undefined) ??
+        (isRecord(source[key]) ? (source[key] as Record<string, unknown>).character : undefined) ??
+        (isRecord(source[key]) ? (source[key] as Record<string, unknown>).char : undefined) ??
+        (isRecord(source[key]) ? (source[key] as Record<string, unknown>).offset : undefined),
+    );
+    if (line !== null && column !== null) {
+      return { line, column };
+    }
+    const nested = source[key];
+    if (isRecord(nested)) {
+      const nestedLine = toInteger(nested.line ?? nested.lineNumber ?? nested.row);
+      const nestedColumn = toInteger(nested.column ?? nested.character ?? nested.char ?? nested.offset);
+      if (nestedLine !== null && nestedColumn !== null) {
+        return { line: nestedLine, column: nestedColumn };
+      }
+    }
+  }
+  return null;
+}
+
+function toInteger(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const normalized = Math.trunc(value);
+    return normalized >= 1 ? normalized : 1;
+  }
+  if (typeof value === 'string' && value.trim().length) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      const normalized = Math.trunc(parsed);
+      return normalized >= 1 ? normalized : 1;
+    }
+  }
+  return null;
+}
+
+function applyOutlineRenameOptimistic(elementId: string, label: string): () => void {
+  const nodes = outlineNodesByElementId.get(elementId) ?? [];
+  const previousNodes = nodes.map((node) => ({ node, label: node.label }));
+  const previousRecord = outlineElementCache.get(elementId);
+  if (nodes.length) {
+    for (const entry of previousNodes) {
+      entry.node.label = label;
+    }
+    outlineRevision.value += 1;
+  }
+  if (previousRecord) {
+    outlineElementCache.set(elementId, { ...previousRecord, name: label });
+  }
+  return () => {
+    if (previousRecord) {
+      outlineElementCache.set(elementId, previousRecord);
+    }
+    for (const entry of previousNodes) {
+      entry.node.label = entry.label;
+    }
+    if (previousNodes.length) {
+      outlineRevision.value += 1;
+    }
+  };
+}
+
+function updateOutlineFromRecords(records: ApiElementRecord[]): void {
+  if (!records.length) {
+    return;
+  }
+  let dirty = false;
+  for (const record of records) {
+    outlineElementCache.set(record.id, record);
+    const nodes = outlineNodesByElementId.get(record.id);
+    if (!nodes || !nodes.length) {
+      continue;
+    }
+    const nextLabel = computeOutlineLabel(record);
+    const nextType = computeOutlineType(record);
+    const nextRange = extractOutlineRange(record);
+    for (const node of nodes) {
+      node.label = nextLabel;
+      node.type = nextType;
+      node.range = nextRange;
+    }
+    dirty = true;
+  }
+  if (dirty) {
+    outlineRevision.value += 1;
+  }
+}
+
+function applyTextPatches(edits: TextEditPatch[]): void {
+  if (!edits.length || !editorRef.value || !monacoApi) {
+    return;
+  }
+  const editor = editorRef.value;
+  const operations = edits
+    .map((edit) => ({
+      range: toMonacoRange(edit.range, monacoApi!),
+      text: edit.text,
+      forceMoveMarkers: true,
+    }))
+    .sort((a, b) => {
+      if (a.range.startLineNumber === b.range.startLineNumber) {
+        return b.range.startColumn - a.range.startColumn;
+      }
+      return b.range.startLineNumber - a.range.startLineNumber;
+    });
+  const selections = editor.getSelections();
+  editor.pushUndoStop();
+  editor.executeEdits('rename-refactor', operations);
+  editor.pushUndoStop();
+  if (selections) {
+    editor.setSelections(selections);
+  }
+  scheduleValidation(true);
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError';
+}
+
 function buildElementUrl(config: OutlineConfig, elementId?: string, suffix?: string) {
   let url = `${config.baseUrl}/projects/${encodeURIComponent(config.projectId)}/commits/${encodeURIComponent(
     config.commitId,
@@ -596,8 +988,12 @@ function buildElementUrl(config: OutlineConfig, elementId?: string, suffix?: str
   return url;
 }
 
-async function requestJson(url: string, signal: AbortSignal): Promise<unknown> {
-  const response = await fetch(url, { signal });
+async function requestJson(url: string, signal: AbortSignal, init?: RequestInit): Promise<unknown> {
+  const headers = new Headers(init?.headers ?? undefined);
+  if (!headers.has('Accept')) {
+    headers.set('Accept', 'application/json');
+  }
+  const response = await fetch(url, { ...init, signal, headers });
   if (response.status === 204) {
     if (!response.ok) {
       throw new Error(`Request failed with status ${response.status}`);
@@ -796,6 +1192,7 @@ function rebuildOutlineIndexes(root: OutlineNode | null) {
     }
   };
   visit(root);
+  outlineRevision.value += 1;
 }
 
 function handleOutlineClick(node: OutlineNode) {
@@ -861,6 +1258,15 @@ watch(outlineSelectedKey, (key) => {
     });
   }
 });
+
+watch(
+  selectedOutlineNode,
+  (node) => {
+    renameError.value = null;
+    renameDraft.value = node ? node.label : '';
+  },
+  { immediate: true },
+);
 
 function formatOutlineType(type?: string): string {
   if (!type) {
