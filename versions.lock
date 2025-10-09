@@ -3,3 +3,9 @@
 SysML-v2-Release: 2025-07
 SysML-v2-API-Services: 2025-07
 SysML-v2-Pilot-Implementation: 2025-07
+
+# Optional fork overrides allow downstream consumers to pin a forked repository
+# instead of the upstream Systems-Modeling organization. Specify entries using
+# the format `<component>@fork=<owner>/<repo>@<commitish>`.
+# Example:
+# SysML-v2-API-Services@fork=Systems-Modeling/SysML-v2-API-Services@2025-07
