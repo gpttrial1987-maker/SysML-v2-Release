@@ -7,7 +7,7 @@
     "esModuleInterop": true,
     "strict": true,
     "skipLibCheck": true,
-    "types": ["vitest/globals"],
+    "types": ["vitest/globals", "@playwright/test"],
     "lib": ["ES2022", "DOM"],
     "allowSyntheticDefaultImports": true
   },

@@ -1,1 +1,4 @@
 Icon?
+
+# Playwright runtime artifacts
+tests/playwright/.runtime/
