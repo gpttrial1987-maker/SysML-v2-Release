@@ -16,11 +16,9 @@
   },
   "dependencies": {
     "@monaco-editor/loader": "^1.4.0",
+    "elkjs": "^0.8.2",
     "monaco-editor": "^0.47.0",
     "vue": "^3.4.37"
-  },
-  "dependencies": {
-    "elkjs": "^0.8.2"
   },
   "devDependencies": {
     "@types/node": "^20.16.3",

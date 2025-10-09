@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: sysml2
+          POSTGRES_USER: sysml2
+          POSTGRES_PASSWORD: sysml2
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U $$POSTGRES_USER"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      api:
+        image: ghcr.io/systems-modeling/sysml-v2-api-services:latest
+        env:
+          SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/sysml2
+          SPRING_DATASOURCE_USERNAME: sysml2
+          SPRING_DATASOURCE_PASSWORD: sysml2
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "curl -fsS http://localhost:9000/docs || exit 1"
+          --health-interval 30s
+          --health-timeout 10s
+          --health-retries 10
+          --health-start-period 60s
+    env:
+      SYSML_API_URL: http://localhost:9000/api
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build frontend
+        run: npm run build:editor
+
+      - name: Wait for API readiness
+        run: |
+          for attempt in {1..30}; do
+            if curl -fsS http://localhost:9000/docs > /dev/null; then
+              exit 0
+            fi
+            echo "Waiting for API (attempt ${attempt})"
+            sleep 10
+          done
+          echo "API service did not become ready" >&2
+          exit 1
+
+      - name: Run API test suite
+        run: npm test -- --run tests/api
+
+      - name: Install Playwright browsers
+        if: ${{ hashFiles('**/playwright.config.*') != '' }}
+        run: npx playwright install --with-deps
+
+      - name: Run Playwright UI tests
+        if: ${{ hashFiles('**/playwright.config.*') != '' }}
+        run: npx playwright test
+
+      - name: Skip Playwright UI tests
+        if: ${{ hashFiles('**/playwright.config.*') == '' }}
+        run: echo "No Playwright configuration found. Skipping UI tests."
+
+      - name: Upload versions.lock report
+        uses: actions/upload-artifact@v4
+        with:
+          name: versions-lock-report
+          path: versions.lock
