@@ -11,7 +11,8 @@
     "check:versions": "node scripts/validate-versions-lock.mjs",
     "prebuild:editor": "node scripts/validate-versions-lock.mjs --mode=production",
     "build:editor": "vite build --config apps/vue-monaco-editor/vite.config.ts",
-    "preview:editor": "vite preview --config apps/vue-monaco-editor/vite.config.ts"
+    "preview:editor": "vite preview --config apps/vue-monaco-editor/vite.config.ts",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@monaco-editor/loader": "^1.4.0",
@@ -26,6 +27,7 @@
     "@vitejs/plugin-vue": "^5.0.5",
     "typescript": "^5.5.4",
     "vite": "^5.3.4",
-    "vitest": "^1.6.0"
+    "vitest": "^1.6.0",
+    "@playwright/test": "^1.50.0"
   }
 }
