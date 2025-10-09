@@ -4074,14 +4074,21 @@ function inferImportCandidates(
     /import\s+required\s+for\s+(?:element\s+)?['"]?([\w.:]+)['"]?/i,
   ];
 
+  let messageIndicatesImport = false;
+
   for (const pattern of patterns) {
     const match = pattern.exec(message);
     if (match && match[1]) {
+      messageIndicatesImport = true;
       const sanitized = sanitizeImportCandidate(match[1]);
       if (sanitized) {
         matches.push(sanitized);
       }
     }
+  }
+
+  if (!messageIndicatesImport) {
+    return Array.from(new Set(matches));
   }
 
   if (typeof issue.elementId === 'string') {
