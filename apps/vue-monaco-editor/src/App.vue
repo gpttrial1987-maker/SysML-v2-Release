@@ -80,6 +80,35 @@
               />
             </label>
           </div>
+          <div class="library-import">
+            <div class="library-import-header">
+              <h3>Import official library</h3>
+              <button
+                type="button"
+                class="import-button"
+                @click="triggerLibraryImport"
+                :disabled="importInProgress || !libraryImportReady"
+              >
+                {{ importInProgress ? 'Importing…' : 'Import Library' }}
+              </button>
+            </div>
+            <p class="library-import-hint">
+              Load the <code>sysml.library</code> package from the official release repository into the
+              configured project. A new commit will be created by the API.
+            </p>
+            <p
+              v-if="importStatusMessage"
+              class="import-status"
+              :class="importState"
+              aria-live="polite"
+            >
+              {{ importStatusMessage }}
+            </p>
+            <ul v-if="importLogs.length" class="import-progress">
+              <li v-for="(entry, index) in importLogs" :key="index">{{ entry }}</li>
+            </ul>
+            <pre v-if="importErrorDetails" class="import-error-details">{{ importErrorDetails }}</pre>
+          </div>
           <div class="outline-body">
             <p v-if="!outlineReadyToLoad" class="outline-hint">
               Provide the API base URL, project ID, commit ID, and root element ID to load the outline.
@@ -154,6 +183,20 @@ type MonacoApi = typeof import('monaco-editor');
 type ValidationState = 'idle' | 'running' | 'success' | 'error' | 'info';
 
 type IssueSeverity = 'error' | 'warning' | 'info';
+
+type ImportState = 'idle' | 'running' | 'success' | 'error';
+
+const OFFICIAL_LIBRARY_REPOSITORY_URL = 'https://github.com/Systems-Modeling/SysML-v2-Release.git';
+const OFFICIAL_LIBRARY_REFERENCE = 'main';
+const OFFICIAL_LIBRARY_DIRECTORY = 'sysml.library';
+
+interface ImportOperationStatus {
+  status: 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'unknown';
+  message?: string;
+  logs: string[];
+  result: unknown;
+  error: unknown;
+}
 
 interface NormalizedRange {
   startLineNumber: number;
@@ -248,6 +291,16 @@ const outlineError = ref<string | null>(null);
 const outlineRoot = ref<OutlineNode | null>(null);
 const outlineSelectedKey = ref<string | null>(null);
 
+const importState = ref<ImportState>('idle');
+const importStatusMessage = ref('');
+const importLogs = ref<string[]>([]);
+const importErrorDetails = ref<string | null>(null);
+const importAbortController = ref<AbortController | null>(null);
+
+const libraryImportReady = computed(
+  () => sysmlApiBaseUrl.value.trim().length > 0 && outlineProjectId.value.trim().length > 0,
+);
+
 const outlineReadyToLoad = computed(
   () =>
     sysmlApiBaseUrl.value.trim().length > 0 &&
@@ -276,6 +329,7 @@ const monacoRoot = ref<HTMLDivElement | null>(null);
 const editorRef = shallowRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
 
 const isValidating = computed(() => status.value === 'running');
+const importInProgress = computed(() => importState.value === 'running');
 const lastValidated = computed(() =>
   lastValidatedAt.value ? lastValidatedAt.value.toLocaleTimeString() : '',
 );
@@ -387,6 +441,14 @@ watch(
   { immediate: true },
 );
 
+watch([sysmlApiBaseUrl, outlineProjectId], () => {
+  if (importAbortController.value) {
+    importAbortController.value.abort();
+    importAbortController.value = null;
+  }
+  resetImportState();
+});
+
 onBeforeUnmount(() => {
   if (validationTimer) {
     clearTimeout(validationTimer);
@@ -398,6 +460,10 @@ onBeforeUnmount(() => {
   if (outlineAbortController) {
     outlineAbortController.abort();
     outlineAbortController = null;
+  }
+  if (importAbortController.value) {
+    importAbortController.value.abort();
+    importAbortController.value = null;
   }
   for (const disposable of modelDisposables) {
     disposable.dispose();
@@ -417,6 +483,377 @@ onBeforeUnmount(() => {
     editorRef.value = null;
   }
 });
+
+function triggerLibraryImport() {
+  if (importInProgress.value) {
+    return;
+  }
+  importOfficialLibrary().catch((error) => {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      return;
+    }
+    console.error('Library import error', error);
+  });
+}
+
+async function importOfficialLibrary() {
+  const baseUrl = sysmlApiBaseUrl.value.trim();
+  const projectId = outlineProjectId.value.trim();
+
+  if (!baseUrl || !projectId) {
+    importState.value = 'error';
+    importStatusMessage.value = 'API base URL and project ID are required to import the library.';
+    importErrorDetails.value = null;
+    return;
+  }
+
+  if (importAbortController.value) {
+    importAbortController.value.abort();
+    importAbortController.value = null;
+  }
+
+  const controller = new AbortController();
+  importAbortController.value = controller;
+
+  importLogs.value = [];
+  importErrorDetails.value = null;
+  importState.value = 'running';
+  importStatusMessage.value = 'Submitting library import request…';
+  appendImportLog('Requesting import from official SysML v2 release repository…');
+
+  const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+  const targetUrl = `${normalizedBaseUrl}/projects/${encodeURIComponent(projectId)}/library-imports`;
+
+  try {
+    const response = await fetch(targetUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        source: {
+          type: 'git',
+          repositoryUrl: OFFICIAL_LIBRARY_REPOSITORY_URL,
+          directory: OFFICIAL_LIBRARY_DIRECTORY,
+          reference: OFFICIAL_LIBRARY_REFERENCE,
+        },
+      }),
+      signal: controller.signal,
+    });
+
+    const payload = await safeJson(response);
+    const location = response.headers.get('location');
+
+    if (!response.ok && response.status !== 202) {
+      const message =
+        isRecord(payload) && typeof payload.message === 'string'
+          ? payload.message
+          : `Import request failed with status ${response.status}`;
+      importState.value = 'error';
+      importStatusMessage.value = message;
+      importErrorDetails.value = formatImportErrorDetail(payload);
+      return;
+    }
+
+    if (response.status === 202 && location) {
+      appendImportLog('Import queued on server. Monitoring progress…');
+      const statusUrl = resolveStatusUrl(location, normalizedBaseUrl);
+      await pollImportStatus(statusUrl, controller.signal);
+      return;
+    }
+
+    appendImportLog('Import completed.');
+    const successMessage =
+      extractImportMessage(payload) ?? 'Library import completed successfully.';
+    importStatusMessage.value = successMessage;
+    importState.value = 'success';
+    const summary = extractImportSummary(payload);
+    if (summary) {
+      appendImportLog(summary);
+    }
+  } catch (error) {
+    if (controller.signal.aborted) {
+      return;
+    }
+    importState.value = 'error';
+    importStatusMessage.value =
+      error instanceof Error ? error.message : 'Library import failed.';
+    importErrorDetails.value = formatImportErrorDetail(error);
+    throw error;
+  } finally {
+    if (importAbortController.value === controller) {
+      importAbortController.value = null;
+    }
+  }
+}
+
+async function pollImportStatus(statusUrl: string, signal: AbortSignal) {
+  let attempt = 0;
+  const maxAttempts = 120;
+
+  while (attempt < maxAttempts) {
+    if (signal.aborted) {
+      return;
+    }
+
+    if (attempt > 0) {
+      await sleep(Math.min(2000, 500 + attempt * 250));
+      if (signal.aborted) {
+        return;
+      }
+    }
+
+    attempt += 1;
+    const response = await fetch(statusUrl, { signal });
+
+    if (response.status === 204) {
+      importState.value = 'success';
+      importStatusMessage.value = 'Library import completed successfully.';
+      return;
+    }
+
+    const payload = await safeJson(response);
+
+    if (!response.ok) {
+      const message =
+        isRecord(payload) && typeof payload.message === 'string'
+          ? payload.message
+          : `Failed to retrieve import status (status ${response.status}).`;
+      importState.value = 'error';
+      importStatusMessage.value = message;
+      importErrorDetails.value = formatImportErrorDetail(payload);
+      return;
+    }
+
+    const statusInfo = interpretImportStatus(payload);
+
+    if (statusInfo.logs) {
+      for (const entry of statusInfo.logs) {
+        appendImportLog(entry);
+      }
+    }
+
+    if (statusInfo.message) {
+      importStatusMessage.value = statusInfo.message;
+    }
+
+    if (statusInfo.status === 'succeeded') {
+      importState.value = 'success';
+      const message =
+        extractImportMessage(statusInfo.result) ??
+        statusInfo.message ??
+        'Library import completed successfully.';
+      importStatusMessage.value = message;
+      const summary = extractImportSummary(statusInfo.result);
+      if (summary) {
+        appendImportLog(summary);
+      }
+      return;
+    }
+
+    if (statusInfo.status === 'failed' || statusInfo.status === 'cancelled') {
+      importState.value = 'error';
+      importStatusMessage.value =
+        statusInfo.message ??
+        (statusInfo.status === 'cancelled'
+          ? 'Library import was cancelled by the server.'
+          : 'Library import failed.');
+      importErrorDetails.value = formatImportErrorDetail(
+        statusInfo.error ?? statusInfo.result ?? payload,
+      );
+      return;
+    }
+
+    importState.value = 'running';
+  }
+
+  throw new Error('Timed out while waiting for library import to finish.');
+}
+
+function interpretImportStatus(payload: unknown): ImportOperationStatus {
+  if (!isRecord(payload)) {
+    return { status: 'unknown', logs: [], result: null, error: null };
+  }
+
+  const statusCandidate = firstString(
+    payload.status,
+    payload.state,
+    payload.phase,
+    payload.stage,
+  );
+  const done = payload.done === true || payload.completed === true || payload.success === true;
+  const failed = payload.failed === true || payload.error != null || payload.cancelled === true;
+
+  let status: 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'unknown' = 'unknown';
+  if (statusCandidate) {
+    const normalized = statusCandidate.toLowerCase();
+    if (['pending', 'queued', 'accepted', 'waiting'].includes(normalized)) {
+      status = 'pending';
+    } else if (['running', 'in_progress', 'processing', 'executing', 'working'].includes(normalized)) {
+      status = 'running';
+    } else if (['succeeded', 'success', 'completed', 'complete', 'done'].includes(normalized)) {
+      status = 'succeeded';
+    } else if (['failed', 'error', 'aborted'].includes(normalized)) {
+      status = 'failed';
+    } else if (['cancelled', 'canceled'].includes(normalized)) {
+      status = 'cancelled';
+    } else {
+      status = 'running';
+    }
+  }
+
+  if (done && !failed) {
+    status = 'succeeded';
+  } else if (failed) {
+    status = payload.cancelled === true ? 'cancelled' : 'failed';
+  }
+
+  const message = firstString(
+    payload.message,
+    payload.detail,
+    payload.description,
+    payload.statusMessage,
+    payload.info,
+    payload.progress?.message,
+  );
+
+  const logs: string[] = [];
+  const logSources = [payload.logs, payload.history, payload.messages];
+  for (const source of logSources) {
+    if (Array.isArray(source)) {
+      for (const entry of source) {
+        if (typeof entry === 'string') {
+          logs.push(entry);
+        } else if (isRecord(entry)) {
+          const label = firstString(entry.message, entry.detail, entry.description, entry.label);
+          if (label) {
+            logs.push(label);
+          }
+        }
+      }
+    }
+  }
+
+  if (isRecord(payload.progress) && Array.isArray(payload.progress.steps)) {
+    for (const step of payload.progress.steps) {
+      if (typeof step === 'string') {
+        logs.push(step);
+      } else if (isRecord(step)) {
+        const label = firstString(step.message, step.detail, step.description, step.label);
+        if (label) {
+          logs.push(label);
+        }
+      }
+    }
+  }
+
+  const result = payload.result ?? payload.data ?? payload.output ?? payload.payload ?? null;
+  const error = payload.error ?? payload.failure ?? payload.reason ?? payload.details?.error ?? null;
+
+  return { status, message, logs, result, error };
+}
+
+function resetImportState() {
+  importState.value = 'idle';
+  importStatusMessage.value = '';
+  importLogs.value = [];
+  importErrorDetails.value = null;
+}
+
+function appendImportLog(message: string) {
+  const normalized = message.trim();
+  if (!normalized) {
+    return;
+  }
+  const entries = importLogs.value;
+  if (entries.includes(normalized)) {
+    return;
+  }
+  entries.push(normalized);
+  if (entries.length > 25) {
+    entries.splice(0, entries.length - 25);
+  }
+}
+
+function normalizeBaseUrl(value: string): string {
+  return value.replace(/\/+$/, '');
+}
+
+function resolveStatusUrl(location: string, baseUrl: string): string {
+  if (/^https?:/i.test(location)) {
+    return location;
+  }
+  if (location.startsWith('/')) {
+    return `${baseUrl}${location}`;
+  }
+  return `${baseUrl}/${location}`;
+}
+
+function extractImportSummary(payload: unknown): string | null {
+  if (!isRecord(payload)) {
+    return null;
+  }
+  const data = isRecord(payload.data) ? (payload.data as Record<string, unknown>) : payload;
+  const commitId = typeof data.id === 'string' ? data.id : undefined;
+  const message = firstString(
+    data.message,
+    data.commitMessage,
+    data.description,
+    data.detail,
+  );
+  if (commitId && message) {
+    return `Commit ${commitId}: ${message}`;
+  }
+  if (commitId) {
+    return `Commit ${commitId} created.`;
+  }
+  return message ?? null;
+}
+
+function extractImportMessage(payload: unknown): string | undefined {
+  if (typeof payload === 'string') {
+    return payload;
+  }
+  if (!isRecord(payload)) {
+    return undefined;
+  }
+  const summary = extractImportSummary(payload);
+  if (summary) {
+    return `Library import completed. ${summary}`;
+  }
+  return firstString(payload.message, payload.detail, payload.description, payload.statusMessage);
+}
+
+function formatImportErrorDetail(value: unknown): string | null {
+  if (!value) {
+    return null;
+  }
+  if (value instanceof Error) {
+    return value.stack ?? value.message;
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (isRecord(value)) {
+    const message = firstString(value.message, value.detail, value.description);
+    if (message) {
+      try {
+        return `${message}\n${JSON.stringify(value, null, 2)}`;
+      } catch (error) {
+        return message;
+      }
+    }
+  }
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch (error) {
+    return String(value);
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 async function refreshOutline(): Promise<void> {
   const config = getOutlineConfig();

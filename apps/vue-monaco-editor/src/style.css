@@ -163,6 +163,108 @@ body {
   font-size: 0.8125rem;
 }
 
+.library-import {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border-radius: 0.75rem;
+  background: rgba(30, 41, 59, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+}
+
+.library-import-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.library-import-header h3 {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.library-import-hint {
+  margin: 0;
+  font-size: 0.75rem;
+  opacity: 0.75;
+  line-height: 1.4;
+}
+
+.library-import code {
+  font-family: 'JetBrains Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.75rem;
+}
+
+.import-button {
+  border: 1px solid rgba(96, 165, 250, 0.4);
+  border-radius: 0.5rem;
+  background: rgba(37, 99, 235, 0.3);
+  color: inherit;
+  font-size: 0.8125rem;
+  padding: 0.35rem 0.9rem;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.import-button:hover:not(:disabled) {
+  background: rgba(37, 99, 235, 0.45);
+  border-color: rgba(96, 165, 250, 0.6);
+}
+
+.import-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.import-status {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.import-status.running {
+  color: #fde68a;
+}
+
+.import-status.success {
+  color: #bbf7d0;
+}
+
+.import-status.error {
+  color: #fecaca;
+}
+
+.import-progress {
+  margin: 0;
+  padding-left: 1.15rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  max-height: 9rem;
+  overflow-y: auto;
+  line-height: 1.35;
+}
+
+.import-progress li {
+  margin: 0;
+}
+
+.import-error-details {
+  margin: 0;
+  padding: 0.65rem;
+  border-radius: 0.6rem;
+  background: rgba(248, 113, 113, 0.12);
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  font-size: 0.75rem;
+  line-height: 1.4;
+  max-height: 10rem;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
 .outline-body {
   display: flex;
   flex-direction: column;
