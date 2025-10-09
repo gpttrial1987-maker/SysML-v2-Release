@@ -119,6 +119,231 @@
             <p v-else class="outline-status">No owned elements were returned.</p>
           </div>
         </section>
+        <section class="wizard-section">
+          <div class="wizard-header">
+            <h2>Modeling Wizards</h2>
+            <p class="wizard-hint">
+              Guided forms create common elements using the configured SysML API commit and append starter text to the editor.
+            </p>
+            <p v-if="!wizardApiReady" class="wizard-warning">
+              Provide the API base URL, project ID, and commit ID before running a wizard.
+            </p>
+          </div>
+          <details
+            class="wizard-panel"
+            :open="wizardOpenState.block"
+            @toggle="handleWizardToggle('block', $event)"
+          >
+            <summary>
+              <span>New Block</span>
+              <span class="wizard-summary-meta">Creates a Block Definition</span>
+            </summary>
+            <form class="wizard-form" @submit.prevent="submitBlockWizard">
+              <div class="wizard-field">
+                <label for="block-name">Name</label>
+                <input
+                  id="block-name"
+                  v-model="blockWizard.name"
+                  type="text"
+                  placeholder="WheelController"
+                  autocomplete="off"
+                  spellcheck="false"
+                  required
+                />
+              </div>
+              <div class="wizard-field">
+                <label for="block-short-name">Short name (optional)</label>
+                <input
+                  id="block-short-name"
+                  v-model="blockWizard.shortName"
+                  type="text"
+                  placeholder="WheelCtrl"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </div>
+              <div class="wizard-field">
+                <label for="block-doc">Documentation (optional)</label>
+                <textarea
+                  id="block-doc"
+                  v-model="blockWizard.documentation"
+                  rows="2"
+                  placeholder="Describe the purpose of this block."
+                />
+              </div>
+              <p class="wizard-context">
+                Outline selection ·
+                <span>{{ selectedOutlineNode?.label ?? 'None' }}</span>
+              </p>
+              <div class="wizard-actions">
+                <button
+                  type="submit"
+                  :disabled="!wizardApiReady || !blockFormValid || wizardSubmitting.block"
+                >
+                  {{ wizardSubmitting.block ? 'Creating…' : 'Create block' }}
+                </button>
+                <span v-if="wizardSuccess.block" class="wizard-feedback success">
+                  {{ wizardSuccess.block }}
+                </span>
+                <span v-else-if="wizardError.block" class="wizard-feedback error">
+                  {{ wizardError.block }}
+                </span>
+              </div>
+            </form>
+          </details>
+
+          <details
+            class="wizard-panel"
+            :open="wizardOpenState.requirement"
+            @toggle="handleWizardToggle('requirement', $event)"
+          >
+            <summary>
+              <span>New Requirement</span>
+              <span class="wizard-summary-meta">Creates a Requirement Definition</span>
+            </summary>
+            <form class="wizard-form" @submit.prevent="submitRequirementWizard">
+              <div class="wizard-field">
+                <label for="requirement-name">Name</label>
+                <input
+                  id="requirement-name"
+                  v-model="requirementWizard.name"
+                  type="text"
+                  placeholder="MaintainSpeed"
+                  autocomplete="off"
+                  spellcheck="false"
+                  required
+                />
+              </div>
+              <div class="wizard-field">
+                <label for="requirement-short-name">Short name (optional)</label>
+                <input
+                  id="requirement-short-name"
+                  v-model="requirementWizard.shortName"
+                  type="text"
+                  placeholder="MaintainSpd"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </div>
+              <div class="wizard-field">
+                <label for="requirement-id">Requirement ID</label>
+                <input
+                  id="requirement-id"
+                  v-model="requirementWizard.identifier"
+                  type="text"
+                  placeholder="REQ-001"
+                  autocomplete="off"
+                  spellcheck="false"
+                  required
+                />
+              </div>
+              <div class="wizard-field">
+                <label for="requirement-text">Text</label>
+                <textarea
+                  id="requirement-text"
+                  v-model="requirementWizard.text"
+                  rows="3"
+                  placeholder="Describe the system requirement."
+                  required
+                />
+              </div>
+              <div class="wizard-field">
+                <label for="requirement-doc">Documentation (optional)</label>
+                <textarea
+                  id="requirement-doc"
+                  v-model="requirementWizard.documentation"
+                  rows="2"
+                  placeholder="Internal notes or rationale."
+                />
+              </div>
+              <p class="wizard-context">
+                Outline selection ·
+                <span>{{ selectedOutlineNode?.label ?? 'None' }}</span>
+              </p>
+              <div class="wizard-actions">
+                <button
+                  type="submit"
+                  :disabled="
+                    !wizardApiReady ||
+                    !requirementFormValid ||
+                    wizardSubmitting.requirement
+                  "
+                >
+                  {{ wizardSubmitting.requirement ? 'Creating…' : 'Create requirement' }}
+                </button>
+                <span v-if="wizardSuccess.requirement" class="wizard-feedback success">
+                  {{ wizardSuccess.requirement }}
+                </span>
+                <span v-else-if="wizardError.requirement" class="wizard-feedback error">
+                  {{ wizardError.requirement }}
+                </span>
+              </div>
+            </form>
+          </details>
+
+          <details
+            class="wizard-panel"
+            :open="wizardOpenState.state"
+            @toggle="handleWizardToggle('state', $event)"
+          >
+            <summary>
+              <span>New State</span>
+              <span class="wizard-summary-meta">Creates a State Definition</span>
+            </summary>
+            <form class="wizard-form" @submit.prevent="submitStateWizard">
+              <div class="wizard-field">
+                <label for="state-name">Name</label>
+                <input
+                  id="state-name"
+                  v-model="stateWizard.name"
+                  type="text"
+                  placeholder="Idle"
+                  autocomplete="off"
+                  spellcheck="false"
+                  required
+                />
+              </div>
+              <div class="wizard-field">
+                <label for="state-short-name">Short name (optional)</label>
+                <input
+                  id="state-short-name"
+                  v-model="stateWizard.shortName"
+                  type="text"
+                  placeholder="IdleState"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </div>
+              <div class="wizard-field">
+                <label for="state-doc">Documentation (optional)</label>
+                <textarea
+                  id="state-doc"
+                  v-model="stateWizard.documentation"
+                  rows="2"
+                  placeholder="Describe when this state is active."
+                />
+              </div>
+              <p class="wizard-context">
+                Outline selection ·
+                <span>{{ selectedOutlineNode?.label ?? 'None' }}</span>
+              </p>
+              <div class="wizard-actions">
+                <button
+                  type="submit"
+                  :disabled="!wizardApiReady || !stateFormValid || wizardSubmitting.state"
+                >
+                  {{ wizardSubmitting.state ? 'Creating…' : 'Create state' }}
+                </button>
+                <span v-if="wizardSuccess.state" class="wizard-feedback success">
+                  {{ wizardSuccess.state }}
+                </span>
+                <span v-else-if="wizardError.state" class="wizard-feedback error">
+                  {{ wizardError.state }}
+                </span>
+              </div>
+            </form>
+          </details>
+        </section>
         <section>
           <h2>Diagnostics</h2>
           <ul v-if="diagnostics.length" class="validation-list">
@@ -144,7 +369,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue';
 import loader from '@monaco-editor/loader';
 
 import type * as Monaco from 'monaco-editor';
@@ -208,6 +433,15 @@ interface OutlinePosition {
   line: number;
   column: number;
 }
+
+interface ElementUpsert {
+  classifierId: string;
+  name?: string;
+  documentation?: string;
+  payload: Record<string, unknown>;
+}
+
+type WizardType = 'block' | 'requirement' | 'state';
 
 const defaultModel = `package Example::DriveUnit {
   part controller : Controller { id = ctrl_controller; }
@@ -295,6 +529,74 @@ const outlineNodesWithRange: OutlineNode[] = [];
 const outlineNodesByElementId = new Map<string, OutlineNode[]>();
 const outlineElementCache = new Map<string, ApiElementRecord>();
 const outlineOwnedCache = new Map<string, ApiElementRecord[]>();
+let outlinePendingFocusElementId: string | null = null;
+
+const wizardOpenState = reactive<Record<WizardType, boolean>>({
+  block: false,
+  requirement: false,
+  state: false,
+});
+
+const wizardSubmitting = reactive<Record<WizardType, boolean>>({
+  block: false,
+  requirement: false,
+  state: false,
+});
+
+const wizardSuccess = reactive<Record<WizardType, string | null>>({
+  block: null,
+  requirement: null,
+  state: null,
+});
+
+const wizardError = reactive<Record<WizardType, string | null>>({
+  block: null,
+  requirement: null,
+  state: null,
+});
+
+const blockWizard = reactive({
+  name: '',
+  shortName: '',
+  documentation: '',
+});
+
+const requirementWizard = reactive({
+  name: '',
+  shortName: '',
+  identifier: '',
+  text: '',
+  documentation: '',
+});
+
+const stateWizard = reactive({
+  name: '',
+  shortName: '',
+  documentation: '',
+});
+
+const wizardApiReady = computed(() => {
+  const base = sysmlApiBaseUrl.value.trim();
+  const project = outlineProjectId.value.trim();
+  const commit = outlineCommitId.value.trim();
+  return Boolean(base && project && commit);
+});
+
+const selectedOutlineNode = computed(() => {
+  if (!outlineSelectedKey.value) {
+    return null;
+  }
+  return outlineNodeIndex.get(outlineSelectedKey.value) ?? null;
+});
+
+const blockFormValid = computed(() => blockWizard.name.trim().length > 0);
+const requirementFormValid = computed(
+  () =>
+    requirementWizard.name.trim().length > 0 &&
+    requirementWizard.identifier.trim().length > 0 &&
+    requirementWizard.text.trim().length > 0,
+);
+const stateFormValid = computed(() => stateWizard.name.trim().length > 0);
 
 onMounted(async () => {
   loader.config({
@@ -418,6 +720,370 @@ onBeforeUnmount(() => {
   }
 });
 
+function handleWizardToggle(type: WizardType, event: Event) {
+  const details = event.target as HTMLDetailsElement | null;
+  const isOpen = Boolean(details?.open);
+  wizardOpenState[type] = isOpen;
+  if (isOpen) {
+    wizardError[type] = null;
+    wizardSuccess[type] = null;
+    initializeWizard(type);
+  }
+}
+
+function initializeWizard(type: WizardType) {
+  switch (type) {
+    case 'block': {
+      if (!blockWizard.name.trim()) {
+        const suggestion = `Block${generateSuffix()}`;
+        blockWizard.name = suggestion;
+      }
+      if (!blockWizard.shortName.trim()) {
+        blockWizard.shortName = blockWizard.name.trim();
+      }
+      break;
+    }
+    case 'requirement': {
+      if (!requirementWizard.name.trim()) {
+        const suggestion = `Requirement${generateSuffix()}`;
+        requirementWizard.name = suggestion;
+      }
+      if (!requirementWizard.shortName.trim()) {
+        requirementWizard.shortName = requirementWizard.name.trim();
+      }
+      if (!requirementWizard.identifier.trim()) {
+        requirementWizard.identifier = `REQ-${generateSuffix(4)}`;
+      }
+      if (!requirementWizard.text.trim()) {
+        requirementWizard.text = 'Describe the system requirement.';
+      }
+      break;
+    }
+    case 'state': {
+      if (!stateWizard.name.trim()) {
+        const suggestion = `State${generateSuffix()}`;
+        stateWizard.name = suggestion;
+      }
+      if (!stateWizard.shortName.trim()) {
+        stateWizard.shortName = stateWizard.name.trim();
+      }
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+function resetWizardForm(type: WizardType) {
+  switch (type) {
+    case 'block':
+      blockWizard.name = '';
+      blockWizard.shortName = '';
+      blockWizard.documentation = '';
+      break;
+    case 'requirement':
+      requirementWizard.name = '';
+      requirementWizard.shortName = '';
+      requirementWizard.identifier = '';
+      requirementWizard.text = '';
+      requirementWizard.documentation = '';
+      break;
+    case 'state':
+      stateWizard.name = '';
+      stateWizard.shortName = '';
+      stateWizard.documentation = '';
+      break;
+    default:
+      break;
+  }
+  initializeWizard(type);
+}
+
+async function submitBlockWizard() {
+  const input = {
+    name: blockWizard.name.trim(),
+    shortName: blockWizard.shortName.trim(),
+    documentation: blockWizard.documentation.trim(),
+  };
+  await runWizardSubmission(
+    'block',
+    () => buildBlockUpsert(input),
+    (record) => buildBlockSnippet(record, input),
+    (record) => `Block ${input.name || record.id} created.`,
+  );
+}
+
+async function submitRequirementWizard() {
+  const input = {
+    name: requirementWizard.name.trim(),
+    shortName: requirementWizard.shortName.trim(),
+    identifier: requirementWizard.identifier.trim(),
+    text: requirementWizard.text.trim(),
+    documentation: requirementWizard.documentation.trim(),
+  };
+  await runWizardSubmission(
+    'requirement',
+    () => buildRequirementUpsert(input),
+    (record) => buildRequirementSnippet(record, input),
+    (record) => `Requirement ${input.name || record.id} created.`,
+  );
+}
+
+async function submitStateWizard() {
+  const input = {
+    name: stateWizard.name.trim(),
+    shortName: stateWizard.shortName.trim(),
+    documentation: stateWizard.documentation.trim(),
+  };
+  await runWizardSubmission(
+    'state',
+    () => buildStateUpsert(input),
+    (record) => buildStateSnippet(record, input),
+    (record) => `State ${input.name || record.id} created.`,
+  );
+}
+
+async function runWizardSubmission(
+  type: WizardType,
+  buildBody: () => ElementUpsert,
+  buildSnippet: (record: ApiElementRecord) => string,
+  buildSuccessMessage: (record: ApiElementRecord) => string,
+) {
+  if (wizardSubmitting[type]) {
+    return;
+  }
+  wizardError[type] = null;
+  wizardSuccess[type] = null;
+  if (!wizardApiReady.value) {
+    wizardError[type] = 'Configure the SysML API connection before creating elements.';
+    return;
+  }
+
+  try {
+    wizardSubmitting[type] = true;
+    const body = buildBody();
+    const record = await createElementViaApi(body);
+    const snippet = buildSnippet(record);
+    if (snippet.trim().length) {
+      appendEditorSnippet(snippet);
+    }
+    outlinePendingFocusElementId = record.id;
+    try {
+      await refreshOutline();
+    } catch (error) {
+      console.error('Wizard outline refresh failed', error);
+    }
+    wizardSuccess[type] = buildSuccessMessage(record);
+    resetWizardForm(type);
+  } catch (error) {
+    wizardError[type] = error instanceof Error ? error.message : 'Request failed.';
+  } finally {
+    wizardSubmitting[type] = false;
+  }
+}
+
+function buildBlockUpsert(input: {
+  name: string;
+  shortName: string;
+  documentation: string;
+}): ElementUpsert {
+  const payload: Record<string, unknown> = {
+    '@type': 'BlockDefinition',
+  };
+  if (input.name) {
+    payload.declaredName = input.name;
+  }
+  if (input.shortName) {
+    payload.declaredShortName = input.shortName;
+  }
+  return {
+    classifierId: 'sysml:BlockDefinition',
+    name: input.name || undefined,
+    documentation: input.documentation || undefined,
+    payload,
+  };
+}
+
+function buildRequirementUpsert(input: {
+  name: string;
+  shortName: string;
+  identifier: string;
+  text: string;
+  documentation: string;
+}): ElementUpsert {
+  const payload: Record<string, unknown> = {
+    '@type': 'RequirementDefinition',
+  };
+  if (input.name) {
+    payload.declaredName = input.name;
+  }
+  if (input.shortName) {
+    payload.declaredShortName = input.shortName;
+  }
+  if (input.identifier) {
+    payload.reqId = input.identifier;
+  }
+  if (input.text) {
+    payload.text = [input.text];
+  }
+  return {
+    classifierId: 'sysml:RequirementDefinition',
+    name: input.name || undefined,
+    documentation: input.documentation || undefined,
+    payload,
+  };
+}
+
+function buildStateUpsert(input: {
+  name: string;
+  shortName: string;
+  documentation: string;
+}): ElementUpsert {
+  const payload: Record<string, unknown> = {
+    '@type': 'StateDefinition',
+  };
+  if (input.name) {
+    payload.declaredName = input.name;
+  }
+  if (input.shortName) {
+    payload.declaredShortName = input.shortName;
+  }
+  return {
+    classifierId: 'sysml:StateDefinition',
+    name: input.name || undefined,
+    documentation: input.documentation || undefined,
+    payload,
+  };
+}
+
+function buildBlockSnippet(record: ApiElementRecord, input: {
+  name: string;
+  documentation: string;
+}): string {
+  const identifier = toSnippetIdentifier(input.name, 'NewBlock');
+  const lines = [`block ${identifier} {`, `  id = ${JSON.stringify(record.id)};`];
+  if (input.documentation) {
+    lines.push(`  documentation = ${JSON.stringify(input.documentation)};`);
+  }
+  lines.push('}');
+  return lines.join('\n');
+}
+
+function buildRequirementSnippet(record: ApiElementRecord, input: {
+  name: string;
+  identifier: string;
+  text: string;
+}): string {
+  const identifierName = toSnippetIdentifier(input.name, 'NewRequirement');
+  const lines = [`requirement ${identifierName} {`, `  id = ${JSON.stringify(record.id)};`];
+  if (input.identifier) {
+    lines.push(`  reqId = ${JSON.stringify(input.identifier)};`);
+  }
+  if (input.text) {
+    lines.push(`  text = ${JSON.stringify(input.text)};`);
+  }
+  lines.push('}');
+  return lines.join('\n');
+}
+
+function buildStateSnippet(record: ApiElementRecord, input: { name: string }): string {
+  const identifier = toSnippetIdentifier(input.name, 'NewState');
+  const lines = [`state ${identifier} {`, `  id = ${JSON.stringify(record.id)};`, '}'];
+  return lines.join('\n');
+}
+
+async function createElementViaApi(body: ElementUpsert): Promise<ApiElementRecord> {
+  const config = getOutlineConfig();
+  if (!config) {
+    throw new Error('API base URL, project ID, and commit ID are required.');
+  }
+  const response = await fetch(buildElementUrl(config), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await response.text();
+  let payload: unknown = null;
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch (error) {
+      throw new Error('Response from element creation was not valid JSON.');
+    }
+  }
+  if (!response.ok) {
+    const message =
+      isRecord(payload) && typeof payload.message === 'string'
+        ? payload.message
+        : `Request failed with status ${response.status}`;
+    throw new Error(message);
+  }
+  const record = parseElementRecord(payload);
+  outlineElementCache.set(record.id, record);
+  return record;
+}
+
+function appendEditorSnippet(snippet: string) {
+  if (!editorRef.value || !monacoApi) {
+    return;
+  }
+  const editor = editorRef.value;
+  const model = editor.getModel();
+  if (!model) {
+    return;
+  }
+  const existing = model.getValue();
+  let prefix = '';
+  if (existing.trim().length > 0) {
+    if (existing.endsWith('\n\n')) {
+      prefix = '';
+    } else if (existing.endsWith('\n')) {
+      prefix = '\n';
+    } else {
+      prefix = '\n\n';
+    }
+  }
+  const text = `${prefix}${snippet}\n`;
+  const lastLine = model.getLineCount();
+  const lastColumn = model.getLineMaxColumn(lastLine);
+  const range = new monacoApi.Range(lastLine, lastColumn, lastLine, lastColumn);
+  editor.pushUndoStop();
+  editor.executeEdits('wizard', [{ range, text }]);
+  editor.pushUndoStop();
+  scheduleValidation(true);
+  const finalLine = model.getLineCount();
+  editor.revealLine(finalLine);
+  editor.focus();
+}
+
+function toSnippetIdentifier(name: string, fallback: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) {
+    return fallback;
+  }
+  const sanitized = trimmed.replace(/[^A-Za-z0-9_]/g, '_');
+  if (/^[A-Za-z_]/.test(sanitized)) {
+    return sanitized;
+  }
+  return `${fallback}_${sanitized}`;
+}
+
+function generateSuffix(length = 3): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ0123456789';
+  let result = '';
+  for (let index = 0; index < length; index += 1) {
+    const next = Math.floor(Math.random() * chars.length);
+    result += chars.charAt(next);
+  }
+  return result;
+}
+
+initializeWizard('block');
+initializeWizard('requirement');
+initializeWizard('state');
+
 async function refreshOutline(): Promise<void> {
   const config = getOutlineConfig();
   const elementId = outlineRootElementId.value.trim();
@@ -459,7 +1125,13 @@ async function refreshOutline(): Promise<void> {
     rebuildOutlineIndexes(rootNode);
 
     let nextSelectionKey: string | null = null;
-    if (previousElementId) {
+    if (outlinePendingFocusElementId) {
+      const focusCandidates = outlineNodesByElementId.get(outlinePendingFocusElementId);
+      if (focusCandidates && focusCandidates.length) {
+        nextSelectionKey = focusCandidates[0].key;
+      }
+    }
+    if (!nextSelectionKey && previousElementId) {
       const candidates = outlineNodesByElementId.get(previousElementId);
       if (candidates && candidates.length) {
         nextSelectionKey = candidates[0].key;
@@ -469,6 +1141,7 @@ async function refreshOutline(): Promise<void> {
       nextSelectionKey = rootNode.key;
     }
     outlineSelectedKey.value = nextSelectionKey;
+    outlinePendingFocusElementId = null;
   } catch (error) {
     if (signal.aborted) {
       return;
@@ -477,6 +1150,7 @@ async function refreshOutline(): Promise<void> {
     outlineRoot.value = null;
     rebuildOutlineIndexes(null);
     outlineSelectedKey.value = null;
+    outlinePendingFocusElementId = null;
   } finally {
     if (outlineAbortController === controller) {
       outlineLoading.value = false;
@@ -492,6 +1166,7 @@ function resetOutlineState() {
   outlineLoading.value = false;
   rebuildOutlineIndexes(null);
   applyOutlineHighlight(undefined);
+  outlinePendingFocusElementId = null;
 }
 
 function getOutlineConfig(): OutlineConfig | null {
