@@ -188,6 +188,231 @@
             </div>
           </div>
         </section>
+        <section class="wizard-section">
+          <div class="wizard-header">
+            <h2>Modeling Wizards</h2>
+            <p class="wizard-hint">
+              Guided forms create common elements using the configured SysML API commit and append starter text to the editor.
+            </p>
+            <p v-if="!wizardApiReady" class="wizard-warning">
+              Provide the API base URL, project ID, and commit ID before running a wizard.
+            </p>
+          </div>
+          <details
+            class="wizard-panel"
+            :open="wizardOpenState.block"
+            @toggle="handleWizardToggle('block', $event)"
+          >
+            <summary>
+              <span>New Block</span>
+              <span class="wizard-summary-meta">Creates a Block Definition</span>
+            </summary>
+            <form class="wizard-form" @submit.prevent="submitBlockWizard">
+              <div class="wizard-field">
+                <label for="block-name">Name</label>
+                <input
+                  id="block-name"
+                  v-model="blockWizard.name"
+                  type="text"
+                  placeholder="WheelController"
+                  autocomplete="off"
+                  spellcheck="false"
+                  required
+                />
+              </div>
+              <div class="wizard-field">
+                <label for="block-short-name">Short name (optional)</label>
+                <input
+                  id="block-short-name"
+                  v-model="blockWizard.shortName"
+                  type="text"
+                  placeholder="WheelCtrl"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </div>
+              <div class="wizard-field">
+                <label for="block-doc">Documentation (optional)</label>
+                <textarea
+                  id="block-doc"
+                  v-model="blockWizard.documentation"
+                  rows="2"
+                  placeholder="Describe the purpose of this block."
+                />
+              </div>
+              <p class="wizard-context">
+                Outline selection ·
+                <span>{{ selectedOutlineNode?.label ?? 'None' }}</span>
+              </p>
+              <div class="wizard-actions">
+                <button
+                  type="submit"
+                  :disabled="!wizardApiReady || !blockFormValid || wizardSubmitting.block"
+                >
+                  {{ wizardSubmitting.block ? 'Creating…' : 'Create block' }}
+                </button>
+                <span v-if="wizardSuccess.block" class="wizard-feedback success">
+                  {{ wizardSuccess.block }}
+                </span>
+                <span v-else-if="wizardError.block" class="wizard-feedback error">
+                  {{ wizardError.block }}
+                </span>
+              </div>
+            </form>
+          </details>
+
+          <details
+            class="wizard-panel"
+            :open="wizardOpenState.requirement"
+            @toggle="handleWizardToggle('requirement', $event)"
+          >
+            <summary>
+              <span>New Requirement</span>
+              <span class="wizard-summary-meta">Creates a Requirement Definition</span>
+            </summary>
+            <form class="wizard-form" @submit.prevent="submitRequirementWizard">
+              <div class="wizard-field">
+                <label for="requirement-name">Name</label>
+                <input
+                  id="requirement-name"
+                  v-model="requirementWizard.name"
+                  type="text"
+                  placeholder="MaintainSpeed"
+                  autocomplete="off"
+                  spellcheck="false"
+                  required
+                />
+              </div>
+              <div class="wizard-field">
+                <label for="requirement-short-name">Short name (optional)</label>
+                <input
+                  id="requirement-short-name"
+                  v-model="requirementWizard.shortName"
+                  type="text"
+                  placeholder="MaintainSpd"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </div>
+              <div class="wizard-field">
+                <label for="requirement-id">Requirement ID</label>
+                <input
+                  id="requirement-id"
+                  v-model="requirementWizard.identifier"
+                  type="text"
+                  placeholder="REQ-001"
+                  autocomplete="off"
+                  spellcheck="false"
+                  required
+                />
+              </div>
+              <div class="wizard-field">
+                <label for="requirement-text">Text</label>
+                <textarea
+                  id="requirement-text"
+                  v-model="requirementWizard.text"
+                  rows="3"
+                  placeholder="Describe the system requirement."
+                  required
+                />
+              </div>
+              <div class="wizard-field">
+                <label for="requirement-doc">Documentation (optional)</label>
+                <textarea
+                  id="requirement-doc"
+                  v-model="requirementWizard.documentation"
+                  rows="2"
+                  placeholder="Internal notes or rationale."
+                />
+              </div>
+              <p class="wizard-context">
+                Outline selection ·
+                <span>{{ selectedOutlineNode?.label ?? 'None' }}</span>
+              </p>
+              <div class="wizard-actions">
+                <button
+                  type="submit"
+                  :disabled="
+                    !wizardApiReady ||
+                    !requirementFormValid ||
+                    wizardSubmitting.requirement
+                  "
+                >
+                  {{ wizardSubmitting.requirement ? 'Creating…' : 'Create requirement' }}
+                </button>
+                <span v-if="wizardSuccess.requirement" class="wizard-feedback success">
+                  {{ wizardSuccess.requirement }}
+                </span>
+                <span v-else-if="wizardError.requirement" class="wizard-feedback error">
+                  {{ wizardError.requirement }}
+                </span>
+              </div>
+            </form>
+          </details>
+
+          <details
+            class="wizard-panel"
+            :open="wizardOpenState.state"
+            @toggle="handleWizardToggle('state', $event)"
+          >
+            <summary>
+              <span>New State</span>
+              <span class="wizard-summary-meta">Creates a State Definition</span>
+            </summary>
+            <form class="wizard-form" @submit.prevent="submitStateWizard">
+              <div class="wizard-field">
+                <label for="state-name">Name</label>
+                <input
+                  id="state-name"
+                  v-model="stateWizard.name"
+                  type="text"
+                  placeholder="Idle"
+                  autocomplete="off"
+                  spellcheck="false"
+                  required
+                />
+              </div>
+              <div class="wizard-field">
+                <label for="state-short-name">Short name (optional)</label>
+                <input
+                  id="state-short-name"
+                  v-model="stateWizard.shortName"
+                  type="text"
+                  placeholder="IdleState"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </div>
+              <div class="wizard-field">
+                <label for="state-doc">Documentation (optional)</label>
+                <textarea
+                  id="state-doc"
+                  v-model="stateWizard.documentation"
+                  rows="2"
+                  placeholder="Describe when this state is active."
+                />
+              </div>
+              <p class="wizard-context">
+                Outline selection ·
+                <span>{{ selectedOutlineNode?.label ?? 'None' }}</span>
+              </p>
+              <div class="wizard-actions">
+                <button
+                  type="submit"
+                  :disabled="!wizardApiReady || !stateFormValid || wizardSubmitting.state"
+                >
+                  {{ wizardSubmitting.state ? 'Creating…' : 'Create state' }}
+                </button>
+                <span v-if="wizardSuccess.state" class="wizard-feedback success">
+                  {{ wizardSuccess.state }}
+                </span>
+                <span v-else-if="wizardError.state" class="wizard-feedback error">
+                  {{ wizardError.state }}
+                </span>
+              </div>
+            </form>
+          </details>
+        </section>
         <section>
           <h2>Diagnostics</h2>
           <ul v-if="diagnostics.length" class="validation-list">
@@ -213,7 +438,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue';
 import loader from '@monaco-editor/loader';
 
 import type * as Monaco from 'monaco-editor';
@@ -292,6 +517,14 @@ interface OutlinePosition {
   column: number;
 }
 
+interface ElementUpsert {
+  classifierId: string;
+  name?: string;
+  documentation?: string;
+  payload: Record<string, unknown>;
+}
+
+type WizardType = 'block' | 'requirement' | 'state';
 interface TextEditPatch {
   range: NormalizedRange;
   text: string;
@@ -969,7 +1202,13 @@ async function refreshOutline(): Promise<void> {
     rebuildOutlineIndexes(rootNode);
 
     let nextSelectionKey: string | null = null;
-    if (previousElementId) {
+    if (outlinePendingFocusElementId) {
+      const focusCandidates = outlineNodesByElementId.get(outlinePendingFocusElementId);
+      if (focusCandidates && focusCandidates.length) {
+        nextSelectionKey = focusCandidates[0].key;
+      }
+    }
+    if (!nextSelectionKey && previousElementId) {
       const candidates = outlineNodesByElementId.get(previousElementId);
       if (candidates && candidates.length) {
         nextSelectionKey = candidates[0].key;
@@ -979,6 +1218,7 @@ async function refreshOutline(): Promise<void> {
       nextSelectionKey = rootNode.key;
     }
     outlineSelectedKey.value = nextSelectionKey;
+    outlinePendingFocusElementId = null;
   } catch (error) {
     if (signal.aborted) {
       return;
@@ -987,6 +1227,7 @@ async function refreshOutline(): Promise<void> {
     outlineRoot.value = null;
     rebuildOutlineIndexes(null);
     outlineSelectedKey.value = null;
+    outlinePendingFocusElementId = null;
   } finally {
     if (outlineAbortController === controller) {
       outlineLoading.value = false;
