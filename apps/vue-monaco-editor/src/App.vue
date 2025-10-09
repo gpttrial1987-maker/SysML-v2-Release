@@ -80,6 +80,35 @@
               />
             </label>
           </div>
+          <div class="library-import">
+            <div class="library-import-header">
+              <h3>Import official library</h3>
+              <button
+                type="button"
+                class="import-button"
+                @click="triggerLibraryImport"
+                :disabled="importInProgress || !libraryImportReady"
+              >
+                {{ importInProgress ? 'Importing…' : 'Import Library' }}
+              </button>
+            </div>
+            <p class="library-import-hint">
+              Load the <code>sysml.library</code> package from the official release repository into the
+              configured project. A new commit will be created by the API.
+            </p>
+            <p
+              v-if="importStatusMessage"
+              class="import-status"
+              :class="importState"
+              aria-live="polite"
+            >
+              {{ importStatusMessage }}
+            </p>
+            <ul v-if="importLogs.length" class="import-progress">
+              <li v-for="(entry, index) in importLogs" :key="index">{{ entry }}</li>
+            </ul>
+            <pre v-if="importErrorDetails" class="import-error-details">{{ importErrorDetails }}</pre>
+          </div>
           <div class="outline-body">
             <p v-if="!outlineReadyToLoad" class="outline-hint">
               Provide the API base URL, project ID, commit ID, and root element ID to load the outline.
@@ -117,6 +146,46 @@
               </li>
             </ul>
             <p v-else class="outline-status">No owned elements were returned.</p>
+            <div
+              v-if="selectedOutlineNode"
+              class="outline-rename-panel"
+              role="group"
+              aria-labelledby="outline-rename-label"
+            >
+              <div class="outline-rename-header">
+                <h3 id="outline-rename-label">Rename element</h3>
+                <p class="outline-rename-hint">Updates the element and all references via the API.</p>
+              </div>
+              <label class="outline-rename-field" for="outline-rename-input">
+                New name
+                <input
+                  id="outline-rename-input"
+                  v-model="renameDraft"
+                  type="text"
+                  :disabled="renameBusy"
+                  spellcheck="false"
+                />
+              </label>
+              <div class="outline-rename-actions">
+                <button
+                  type="button"
+                  class="outline-rename-submit"
+                  @click="submitRename"
+                  :disabled="renameBusy || !renameHasChanges"
+                >
+                  {{ renameBusy ? 'Renaming…' : 'Rename' }}
+                </button>
+                <button
+                  type="button"
+                  class="outline-rename-reset"
+                  @click="resetRenameDraft"
+                  :disabled="renameBusy"
+                >
+                  Reset
+                </button>
+              </div>
+              <p v-if="renameError" class="outline-error">{{ renameError }}</p>
+            </div>
           </div>
         </section>
         <section class="wizard-section">
@@ -380,6 +449,20 @@ type ValidationState = 'idle' | 'running' | 'success' | 'error' | 'info';
 
 type IssueSeverity = 'error' | 'warning' | 'info';
 
+type ImportState = 'idle' | 'running' | 'success' | 'error';
+
+const OFFICIAL_LIBRARY_REPOSITORY_URL = 'https://github.com/Systems-Modeling/SysML-v2-Release.git';
+const OFFICIAL_LIBRARY_REFERENCE = 'main';
+const OFFICIAL_LIBRARY_DIRECTORY = 'sysml.library';
+
+interface ImportOperationStatus {
+  status: 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'unknown';
+  message?: string;
+  logs: string[];
+  result: unknown;
+  error: unknown;
+}
+
 interface NormalizedRange {
   startLineNumber: number;
   startColumn: number;
@@ -442,6 +525,15 @@ interface ElementUpsert {
 }
 
 type WizardType = 'block' | 'requirement' | 'state';
+interface TextEditPatch {
+  range: NormalizedRange;
+  text: string;
+}
+
+interface RenameRefactorResult {
+  patches: TextEditPatch[];
+  elements: ApiElementRecord[];
+}
 
 const defaultModel = `package Example::DriveUnit {
   part controller : Controller { id = ctrl_controller; }
@@ -482,6 +574,16 @@ const outlineError = ref<string | null>(null);
 const outlineRoot = ref<OutlineNode | null>(null);
 const outlineSelectedKey = ref<string | null>(null);
 
+const importState = ref<ImportState>('idle');
+const importStatusMessage = ref('');
+const importLogs = ref<string[]>([]);
+const importErrorDetails = ref<string | null>(null);
+const importAbortController = ref<AbortController | null>(null);
+
+const libraryImportReady = computed(
+  () => sysmlApiBaseUrl.value.trim().length > 0 && outlineProjectId.value.trim().length > 0,
+);
+
 const outlineReadyToLoad = computed(
   () =>
     sysmlApiBaseUrl.value.trim().length > 0 &&
@@ -491,6 +593,9 @@ const outlineReadyToLoad = computed(
 );
 
 const outlineItems = computed<OutlineListItem[]>(() => {
+  // track updates to existing outline nodes without rebuilding the tree
+  // eslint-disable-next-line no-unused-expressions
+  outlineRevision.value;
   const rootNode = outlineRoot.value;
   if (!rootNode) {
     return [];
@@ -510,6 +615,7 @@ const monacoRoot = ref<HTMLDivElement | null>(null);
 const editorRef = shallowRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
 
 const isValidating = computed(() => status.value === 'running');
+const importInProgress = computed(() => importState.value === 'running');
 const lastValidated = computed(() =>
   lastValidatedAt.value ? lastValidatedAt.value.toLocaleTimeString() : '',
 );
@@ -529,74 +635,26 @@ const outlineNodesWithRange: OutlineNode[] = [];
 const outlineNodesByElementId = new Map<string, OutlineNode[]>();
 const outlineElementCache = new Map<string, ApiElementRecord>();
 const outlineOwnedCache = new Map<string, ApiElementRecord[]>();
-let outlinePendingFocusElementId: string | null = null;
+const outlineRevision = ref(0);
+const renameDraft = ref('');
+const renameBusy = ref(false);
+const renameError = ref<string | null>(null);
 
-const wizardOpenState = reactive<Record<WizardType, boolean>>({
-  block: false,
-  requirement: false,
-  state: false,
-});
-
-const wizardSubmitting = reactive<Record<WizardType, boolean>>({
-  block: false,
-  requirement: false,
-  state: false,
-});
-
-const wizardSuccess = reactive<Record<WizardType, string | null>>({
-  block: null,
-  requirement: null,
-  state: null,
-});
-
-const wizardError = reactive<Record<WizardType, string | null>>({
-  block: null,
-  requirement: null,
-  state: null,
-});
-
-const blockWizard = reactive({
-  name: '',
-  shortName: '',
-  documentation: '',
-});
-
-const requirementWizard = reactive({
-  name: '',
-  shortName: '',
-  identifier: '',
-  text: '',
-  documentation: '',
-});
-
-const stateWizard = reactive({
-  name: '',
-  shortName: '',
-  documentation: '',
-});
-
-const wizardApiReady = computed(() => {
-  const base = sysmlApiBaseUrl.value.trim();
-  const project = outlineProjectId.value.trim();
-  const commit = outlineCommitId.value.trim();
-  return Boolean(base && project && commit);
-});
-
-const selectedOutlineNode = computed(() => {
-  if (!outlineSelectedKey.value) {
-    return null;
-  }
-  return outlineNodeIndex.get(outlineSelectedKey.value) ?? null;
-});
-
-const blockFormValid = computed(() => blockWizard.name.trim().length > 0);
-const requirementFormValid = computed(
-  () =>
-    requirementWizard.name.trim().length > 0 &&
-    requirementWizard.identifier.trim().length > 0 &&
-    requirementWizard.text.trim().length > 0,
+const selectedOutlineNode = computed(() =>
+  outlineSelectedKey.value ? outlineNodeIndex.get(outlineSelectedKey.value) ?? null : null,
 );
-const stateFormValid = computed(() => stateWizard.name.trim().length > 0);
+
+const renameHasChanges = computed(() => {
+  const node = selectedOutlineNode.value;
+  if (!node) {
+    return false;
+  }
+  const draft = renameDraft.value.trim();
+  if (!draft) {
+    return false;
+  }
+  return draft !== node.label.trim();
+});
 
 onMounted(async () => {
   loader.config({
@@ -689,6 +747,14 @@ watch(
   { immediate: true },
 );
 
+watch([sysmlApiBaseUrl, outlineProjectId], () => {
+  if (importAbortController.value) {
+    importAbortController.value.abort();
+    importAbortController.value = null;
+  }
+  resetImportState();
+});
+
 onBeforeUnmount(() => {
   if (validationTimer) {
     clearTimeout(validationTimer);
@@ -700,6 +766,10 @@ onBeforeUnmount(() => {
   if (outlineAbortController) {
     outlineAbortController.abort();
     outlineAbortController = null;
+  }
+  if (importAbortController.value) {
+    importAbortController.value.abort();
+    importAbortController.value = null;
   }
   for (const disposable of modelDisposables) {
     disposable.dispose();
@@ -720,369 +790,376 @@ onBeforeUnmount(() => {
   }
 });
 
-function handleWizardToggle(type: WizardType, event: Event) {
-  const details = event.target as HTMLDetailsElement | null;
-  const isOpen = Boolean(details?.open);
-  wizardOpenState[type] = isOpen;
-  if (isOpen) {
-    wizardError[type] = null;
-    wizardSuccess[type] = null;
-    initializeWizard(type);
-  }
-}
-
-function initializeWizard(type: WizardType) {
-  switch (type) {
-    case 'block': {
-      if (!blockWizard.name.trim()) {
-        const suggestion = `Block${generateSuffix()}`;
-        blockWizard.name = suggestion;
-      }
-      if (!blockWizard.shortName.trim()) {
-        blockWizard.shortName = blockWizard.name.trim();
-      }
-      break;
-    }
-    case 'requirement': {
-      if (!requirementWizard.name.trim()) {
-        const suggestion = `Requirement${generateSuffix()}`;
-        requirementWizard.name = suggestion;
-      }
-      if (!requirementWizard.shortName.trim()) {
-        requirementWizard.shortName = requirementWizard.name.trim();
-      }
-      if (!requirementWizard.identifier.trim()) {
-        requirementWizard.identifier = `REQ-${generateSuffix(4)}`;
-      }
-      if (!requirementWizard.text.trim()) {
-        requirementWizard.text = 'Describe the system requirement.';
-      }
-      break;
-    }
-    case 'state': {
-      if (!stateWizard.name.trim()) {
-        const suggestion = `State${generateSuffix()}`;
-        stateWizard.name = suggestion;
-      }
-      if (!stateWizard.shortName.trim()) {
-        stateWizard.shortName = stateWizard.name.trim();
-      }
-      break;
-    }
-    default:
-      break;
-  }
-}
-
-function resetWizardForm(type: WizardType) {
-  switch (type) {
-    case 'block':
-      blockWizard.name = '';
-      blockWizard.shortName = '';
-      blockWizard.documentation = '';
-      break;
-    case 'requirement':
-      requirementWizard.name = '';
-      requirementWizard.shortName = '';
-      requirementWizard.identifier = '';
-      requirementWizard.text = '';
-      requirementWizard.documentation = '';
-      break;
-    case 'state':
-      stateWizard.name = '';
-      stateWizard.shortName = '';
-      stateWizard.documentation = '';
-      break;
-    default:
-      break;
-  }
-  initializeWizard(type);
-}
-
-async function submitBlockWizard() {
-  const input = {
-    name: blockWizard.name.trim(),
-    shortName: blockWizard.shortName.trim(),
-    documentation: blockWizard.documentation.trim(),
-  };
-  await runWizardSubmission(
-    'block',
-    () => buildBlockUpsert(input),
-    (record) => buildBlockSnippet(record, input),
-    (record) => `Block ${input.name || record.id} created.`,
-  );
-}
-
-async function submitRequirementWizard() {
-  const input = {
-    name: requirementWizard.name.trim(),
-    shortName: requirementWizard.shortName.trim(),
-    identifier: requirementWizard.identifier.trim(),
-    text: requirementWizard.text.trim(),
-    documentation: requirementWizard.documentation.trim(),
-  };
-  await runWizardSubmission(
-    'requirement',
-    () => buildRequirementUpsert(input),
-    (record) => buildRequirementSnippet(record, input),
-    (record) => `Requirement ${input.name || record.id} created.`,
-  );
-}
-
-async function submitStateWizard() {
-  const input = {
-    name: stateWizard.name.trim(),
-    shortName: stateWizard.shortName.trim(),
-    documentation: stateWizard.documentation.trim(),
-  };
-  await runWizardSubmission(
-    'state',
-    () => buildStateUpsert(input),
-    (record) => buildStateSnippet(record, input),
-    (record) => `State ${input.name || record.id} created.`,
-  );
-}
-
-async function runWizardSubmission(
-  type: WizardType,
-  buildBody: () => ElementUpsert,
-  buildSnippet: (record: ApiElementRecord) => string,
-  buildSuccessMessage: (record: ApiElementRecord) => string,
-) {
-  if (wizardSubmitting[type]) {
+function triggerLibraryImport() {
+  if (importInProgress.value) {
     return;
   }
-  wizardError[type] = null;
-  wizardSuccess[type] = null;
-  if (!wizardApiReady.value) {
-    wizardError[type] = 'Configure the SysML API connection before creating elements.';
+  importOfficialLibrary().catch((error) => {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      return;
+    }
+    console.error('Library import error', error);
+  });
+}
+
+async function importOfficialLibrary() {
+  const baseUrl = sysmlApiBaseUrl.value.trim();
+  const projectId = outlineProjectId.value.trim();
+
+  if (!baseUrl || !projectId) {
+    importState.value = 'error';
+    importStatusMessage.value = 'API base URL and project ID are required to import the library.';
+    importErrorDetails.value = null;
     return;
   }
+
+  if (importAbortController.value) {
+    importAbortController.value.abort();
+    importAbortController.value = null;
+  }
+
+  const controller = new AbortController();
+  importAbortController.value = controller;
+
+  importLogs.value = [];
+  importErrorDetails.value = null;
+  importState.value = 'running';
+  importStatusMessage.value = 'Submitting library import request…';
+  appendImportLog('Requesting import from official SysML v2 release repository…');
+
+  const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+  const targetUrl = `${normalizedBaseUrl}/projects/${encodeURIComponent(projectId)}/library-imports`;
 
   try {
-    wizardSubmitting[type] = true;
-    const body = buildBody();
-    const record = await createElementViaApi(body);
-    const snippet = buildSnippet(record);
-    if (snippet.trim().length) {
-      appendEditorSnippet(snippet);
+    const response = await fetch(targetUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        source: {
+          type: 'git',
+          repositoryUrl: OFFICIAL_LIBRARY_REPOSITORY_URL,
+          directory: OFFICIAL_LIBRARY_DIRECTORY,
+          reference: OFFICIAL_LIBRARY_REFERENCE,
+        },
+      }),
+      signal: controller.signal,
+    });
+
+    const payload = await safeJson(response);
+    const location = response.headers.get('location');
+
+    if (!response.ok && response.status !== 202) {
+      const message =
+        isRecord(payload) && typeof payload.message === 'string'
+          ? payload.message
+          : `Import request failed with status ${response.status}`;
+      importState.value = 'error';
+      importStatusMessage.value = message;
+      importErrorDetails.value = formatImportErrorDetail(payload);
+      return;
     }
-    outlinePendingFocusElementId = record.id;
-    try {
-      await refreshOutline();
-    } catch (error) {
-      console.error('Wizard outline refresh failed', error);
+
+    if (response.status === 202 && location) {
+      appendImportLog('Import queued on server. Monitoring progress…');
+      const statusUrl = resolveStatusUrl(location, normalizedBaseUrl);
+      await pollImportStatus(statusUrl, controller.signal);
+      return;
     }
-    wizardSuccess[type] = buildSuccessMessage(record);
-    resetWizardForm(type);
+
+    appendImportLog('Import completed.');
+    const successMessage =
+      extractImportMessage(payload) ?? 'Library import completed successfully.';
+    importStatusMessage.value = successMessage;
+    importState.value = 'success';
+    const summary = extractImportSummary(payload);
+    if (summary) {
+      appendImportLog(summary);
+    }
   } catch (error) {
-    wizardError[type] = error instanceof Error ? error.message : 'Request failed.';
+    if (controller.signal.aborted) {
+      return;
+    }
+    importState.value = 'error';
+    importStatusMessage.value =
+      error instanceof Error ? error.message : 'Library import failed.';
+    importErrorDetails.value = formatImportErrorDetail(error);
+    throw error;
   } finally {
-    wizardSubmitting[type] = false;
-  }
-}
-
-function buildBlockUpsert(input: {
-  name: string;
-  shortName: string;
-  documentation: string;
-}): ElementUpsert {
-  const payload: Record<string, unknown> = {
-    '@type': 'BlockDefinition',
-  };
-  if (input.name) {
-    payload.declaredName = input.name;
-  }
-  if (input.shortName) {
-    payload.declaredShortName = input.shortName;
-  }
-  return {
-    classifierId: 'sysml:BlockDefinition',
-    name: input.name || undefined,
-    documentation: input.documentation || undefined,
-    payload,
-  };
-}
-
-function buildRequirementUpsert(input: {
-  name: string;
-  shortName: string;
-  identifier: string;
-  text: string;
-  documentation: string;
-}): ElementUpsert {
-  const payload: Record<string, unknown> = {
-    '@type': 'RequirementDefinition',
-  };
-  if (input.name) {
-    payload.declaredName = input.name;
-  }
-  if (input.shortName) {
-    payload.declaredShortName = input.shortName;
-  }
-  if (input.identifier) {
-    payload.reqId = input.identifier;
-  }
-  if (input.text) {
-    payload.text = [input.text];
-  }
-  return {
-    classifierId: 'sysml:RequirementDefinition',
-    name: input.name || undefined,
-    documentation: input.documentation || undefined,
-    payload,
-  };
-}
-
-function buildStateUpsert(input: {
-  name: string;
-  shortName: string;
-  documentation: string;
-}): ElementUpsert {
-  const payload: Record<string, unknown> = {
-    '@type': 'StateDefinition',
-  };
-  if (input.name) {
-    payload.declaredName = input.name;
-  }
-  if (input.shortName) {
-    payload.declaredShortName = input.shortName;
-  }
-  return {
-    classifierId: 'sysml:StateDefinition',
-    name: input.name || undefined,
-    documentation: input.documentation || undefined,
-    payload,
-  };
-}
-
-function buildBlockSnippet(record: ApiElementRecord, input: {
-  name: string;
-  documentation: string;
-}): string {
-  const identifier = toSnippetIdentifier(input.name, 'NewBlock');
-  const lines = [`block ${identifier} {`, `  id = ${JSON.stringify(record.id)};`];
-  if (input.documentation) {
-    lines.push(`  documentation = ${JSON.stringify(input.documentation)};`);
-  }
-  lines.push('}');
-  return lines.join('\n');
-}
-
-function buildRequirementSnippet(record: ApiElementRecord, input: {
-  name: string;
-  identifier: string;
-  text: string;
-}): string {
-  const identifierName = toSnippetIdentifier(input.name, 'NewRequirement');
-  const lines = [`requirement ${identifierName} {`, `  id = ${JSON.stringify(record.id)};`];
-  if (input.identifier) {
-    lines.push(`  reqId = ${JSON.stringify(input.identifier)};`);
-  }
-  if (input.text) {
-    lines.push(`  text = ${JSON.stringify([input.text])};`);
-  }
-  lines.push('}');
-  return lines.join('\n');
-}
-
-function buildStateSnippet(record: ApiElementRecord, input: { name: string }): string {
-  const identifier = toSnippetIdentifier(input.name, 'NewState');
-  const lines = [`state ${identifier} {`, `  id = ${JSON.stringify(record.id)};`, '}'];
-  return lines.join('\n');
-}
-
-async function createElementViaApi(body: ElementUpsert): Promise<ApiElementRecord> {
-  const config = getOutlineConfig();
-  if (!config) {
-    throw new Error('API base URL, project ID, and commit ID are required.');
-  }
-  const response = await fetch(buildElementUrl(config), {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-  const text = await response.text();
-  let payload: unknown = null;
-  if (text) {
-    try {
-      payload = JSON.parse(text);
-    } catch (error) {
-      throw new Error('Response from element creation was not valid JSON.');
+    if (importAbortController.value === controller) {
+      importAbortController.value = null;
     }
   }
-  if (!response.ok) {
-    const message =
-      isRecord(payload) && typeof payload.message === 'string'
-        ? payload.message
-        : `Request failed with status ${response.status}`;
-    throw new Error(message);
-  }
-  const record = parseElementRecord(payload);
-  outlineElementCache.set(record.id, record);
-  return record;
 }
 
-function appendEditorSnippet(snippet: string) {
-  if (!editorRef.value || !monacoApi) {
-    return;
+async function pollImportStatus(statusUrl: string, signal: AbortSignal) {
+  let attempt = 0;
+  const maxAttempts = 120;
+
+  while (attempt < maxAttempts) {
+    if (signal.aborted) {
+      return;
+    }
+
+    if (attempt > 0) {
+      await sleep(Math.min(2000, 500 + attempt * 250));
+      if (signal.aborted) {
+        return;
+      }
+    }
+
+    attempt += 1;
+    const response = await fetch(statusUrl, { signal });
+
+    if (response.status === 204) {
+      importState.value = 'success';
+      importStatusMessage.value = 'Library import completed successfully.';
+      return;
+    }
+
+    const payload = await safeJson(response);
+
+    if (!response.ok) {
+      const message =
+        isRecord(payload) && typeof payload.message === 'string'
+          ? payload.message
+          : `Failed to retrieve import status (status ${response.status}).`;
+      importState.value = 'error';
+      importStatusMessage.value = message;
+      importErrorDetails.value = formatImportErrorDetail(payload);
+      return;
+    }
+
+    const statusInfo = interpretImportStatus(payload);
+
+    if (statusInfo.logs) {
+      for (const entry of statusInfo.logs) {
+        appendImportLog(entry);
+      }
+    }
+
+    if (statusInfo.message) {
+      importStatusMessage.value = statusInfo.message;
+    }
+
+    if (statusInfo.status === 'succeeded') {
+      importState.value = 'success';
+      const message =
+        extractImportMessage(statusInfo.result) ??
+        statusInfo.message ??
+        'Library import completed successfully.';
+      importStatusMessage.value = message;
+      const summary = extractImportSummary(statusInfo.result);
+      if (summary) {
+        appendImportLog(summary);
+      }
+      return;
+    }
+
+    if (statusInfo.status === 'failed' || statusInfo.status === 'cancelled') {
+      importState.value = 'error';
+      importStatusMessage.value =
+        statusInfo.message ??
+        (statusInfo.status === 'cancelled'
+          ? 'Library import was cancelled by the server.'
+          : 'Library import failed.');
+      importErrorDetails.value = formatImportErrorDetail(
+        statusInfo.error ?? statusInfo.result ?? payload,
+      );
+      return;
+    }
+
+    importState.value = 'running';
   }
-  const editor = editorRef.value;
-  const model = editor.getModel();
-  if (!model) {
-    return;
+
+  throw new Error('Timed out while waiting for library import to finish.');
+}
+
+function interpretImportStatus(payload: unknown): ImportOperationStatus {
+  if (!isRecord(payload)) {
+    return { status: 'unknown', logs: [], result: null, error: null };
   }
-  const existing = model.getValue();
-  let prefix = '';
-  if (existing.trim().length > 0) {
-    if (existing.endsWith('\n\n')) {
-      prefix = '';
-    } else if (existing.endsWith('\n')) {
-      prefix = '\n';
+
+  const statusCandidate = firstString(
+    payload.status,
+    payload.state,
+    payload.phase,
+    payload.stage,
+  );
+  const done = payload.done === true || payload.completed === true || payload.success === true;
+  const failed = payload.failed === true || payload.error != null || payload.cancelled === true;
+
+  let status: 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'unknown' = 'unknown';
+  if (statusCandidate) {
+    const normalized = statusCandidate.toLowerCase();
+    if (['pending', 'queued', 'accepted', 'waiting'].includes(normalized)) {
+      status = 'pending';
+    } else if (['running', 'in_progress', 'processing', 'executing', 'working'].includes(normalized)) {
+      status = 'running';
+    } else if (['succeeded', 'success', 'completed', 'complete', 'done'].includes(normalized)) {
+      status = 'succeeded';
+    } else if (['failed', 'error', 'aborted'].includes(normalized)) {
+      status = 'failed';
+    } else if (['cancelled', 'canceled'].includes(normalized)) {
+      status = 'cancelled';
     } else {
-      prefix = '\n\n';
+      status = 'running';
     }
   }
-  const text = `${prefix}${snippet}\n`;
-  const lastLine = model.getLineCount();
-  const lastColumn = model.getLineMaxColumn(lastLine);
-  const range = new monacoApi.Range(lastLine, lastColumn, lastLine, lastColumn);
-  editor.pushUndoStop();
-  editor.executeEdits('wizard', [{ range, text }]);
-  editor.pushUndoStop();
-  scheduleValidation(true);
-  const finalLine = model.getLineCount();
-  editor.revealLine(finalLine);
-  editor.focus();
+
+  if (done && !failed) {
+    status = 'succeeded';
+  } else if (failed) {
+    status = payload.cancelled === true ? 'cancelled' : 'failed';
+  }
+
+  const message = firstString(
+    payload.message,
+    payload.detail,
+    payload.description,
+    payload.statusMessage,
+    payload.info,
+    payload.progress?.message,
+  );
+
+  const logs: string[] = [];
+  const logSources = [payload.logs, payload.history, payload.messages];
+  for (const source of logSources) {
+    if (Array.isArray(source)) {
+      for (const entry of source) {
+        if (typeof entry === 'string') {
+          logs.push(entry);
+        } else if (isRecord(entry)) {
+          const label = firstString(entry.message, entry.detail, entry.description, entry.label);
+          if (label) {
+            logs.push(label);
+          }
+        }
+      }
+    }
+  }
+
+  if (isRecord(payload.progress) && Array.isArray(payload.progress.steps)) {
+    for (const step of payload.progress.steps) {
+      if (typeof step === 'string') {
+        logs.push(step);
+      } else if (isRecord(step)) {
+        const label = firstString(step.message, step.detail, step.description, step.label);
+        if (label) {
+          logs.push(label);
+        }
+      }
+    }
+  }
+
+  const result = payload.result ?? payload.data ?? payload.output ?? payload.payload ?? null;
+  const error = payload.error ?? payload.failure ?? payload.reason ?? payload.details?.error ?? null;
+
+  return { status, message, logs, result, error };
 }
 
-function toSnippetIdentifier(name: string, fallback: string): string {
-  const trimmed = name.trim();
-  if (!trimmed) {
-    return fallback;
-  }
-  const sanitized = trimmed.replace(/[^A-Za-z0-9_]/g, '_');
-  if (/^[A-Za-z_]/.test(sanitized)) {
-    return sanitized;
-  }
-  return `${fallback}_${sanitized}`;
+function resetImportState() {
+  importState.value = 'idle';
+  importStatusMessage.value = '';
+  importLogs.value = [];
+  importErrorDetails.value = null;
 }
 
-function generateSuffix(length = 3): string {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ0123456789';
-  let result = '';
-  for (let index = 0; index < length; index += 1) {
-    const next = Math.floor(Math.random() * chars.length);
-    result += chars.charAt(next);
+function appendImportLog(message: string) {
+  const normalized = message.trim();
+  if (!normalized) {
+    return;
   }
-  return result;
+  const entries = importLogs.value;
+  if (entries.includes(normalized)) {
+    return;
+  }
+  entries.push(normalized);
+  if (entries.length > 25) {
+    entries.splice(0, entries.length - 25);
+  }
 }
 
-initializeWizard('block');
-initializeWizard('requirement');
-initializeWizard('state');
+function normalizeBaseUrl(value: string): string {
+  return value.replace(/\/+$/, '');
+}
+
+function resolveStatusUrl(location: string, baseUrl: string): string {
+  if (/^https?:/i.test(location)) {
+    return location;
+  }
+  if (location.startsWith('/')) {
+    return `${baseUrl}${location}`;
+  }
+  return `${baseUrl}/${location}`;
+}
+
+function extractImportSummary(payload: unknown): string | null {
+  if (!isRecord(payload)) {
+    return null;
+  }
+  const data = isRecord(payload.data) ? (payload.data as Record<string, unknown>) : payload;
+  const commitId = typeof data.id === 'string' ? data.id : undefined;
+  const message = firstString(
+    data.message,
+    data.commitMessage,
+    data.description,
+    data.detail,
+  );
+  if (commitId && message) {
+    return `Commit ${commitId}: ${message}`;
+  }
+  if (commitId) {
+    return `Commit ${commitId} created.`;
+  }
+  return message ?? null;
+}
+
+function extractImportMessage(payload: unknown): string | undefined {
+  if (typeof payload === 'string') {
+    return payload;
+  }
+  if (!isRecord(payload)) {
+    return undefined;
+  }
+  const summary = extractImportSummary(payload);
+  if (summary) {
+    return `Library import completed. ${summary}`;
+  }
+  return firstString(payload.message, payload.detail, payload.description, payload.statusMessage);
+}
+
+function formatImportErrorDetail(value: unknown): string | null {
+  if (!value) {
+    return null;
+  }
+  if (value instanceof Error) {
+    return value.stack ?? value.message;
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (isRecord(value)) {
+    const message = firstString(value.message, value.detail, value.description);
+    if (message) {
+      try {
+        return `${message}\n${JSON.stringify(value, null, 2)}`;
+      } catch (error) {
+        return message;
+      }
+    }
+  }
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch (error) {
+    return String(value);
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 async function refreshOutline(): Promise<void> {
   const config = getOutlineConfig();
@@ -1166,7 +1243,7 @@ function resetOutlineState() {
   outlineLoading.value = false;
   rebuildOutlineIndexes(null);
   applyOutlineHighlight(undefined);
-  outlinePendingFocusElementId = null;
+  outlineRevision.value += 1;
 }
 
 function getOutlineConfig(): OutlineConfig | null {
@@ -1258,6 +1335,324 @@ async function fetchOwnedElementRecords(
   return records;
 }
 
+async function submitRename(): Promise<void> {
+  const node = selectedOutlineNode.value;
+  if (!node) {
+    return;
+  }
+  const proposed = renameDraft.value.trim();
+  if (!proposed) {
+    renameError.value = 'Provide a non-empty name.';
+    renameDraft.value = node.label;
+    return;
+  }
+  if (proposed === node.label.trim()) {
+    renameDraft.value = node.label;
+    return;
+  }
+
+  const config = getOutlineConfig();
+  if (!config) {
+    renameError.value = 'Provide API configuration before renaming.';
+    return;
+  }
+
+  renameBusy.value = true;
+  renameError.value = null;
+
+  const revertOutline = applyOutlineRenameOptimistic(node.id, proposed);
+
+  try {
+    const result = await requestRenameRefactor(node.id, proposed, config);
+    if (result.elements.length) {
+      updateOutlineFromRecords(result.elements);
+      const refreshed = selectedOutlineNode.value;
+      if (refreshed) {
+        renameDraft.value = refreshed.label;
+      }
+    } else {
+      const cached = outlineElementCache.get(node.id);
+      if (cached) {
+        outlineElementCache.set(node.id, { ...cached, name: proposed });
+      }
+      renameDraft.value = proposed;
+    }
+    if (result.patches.length) {
+      applyTextPatches(result.patches);
+    }
+  } catch (error) {
+    revertOutline();
+    const current = selectedOutlineNode.value;
+    renameDraft.value = current ? current.label : '';
+    if (!isAbortError(error)) {
+      renameError.value = error instanceof Error ? error.message : 'Rename failed.';
+    }
+    return;
+  } finally {
+    renameBusy.value = false;
+  }
+}
+
+function resetRenameDraft(): void {
+  const node = selectedOutlineNode.value;
+  renameDraft.value = node ? node.label : '';
+  renameError.value = null;
+}
+
+async function requestRenameRefactor(
+  elementId: string,
+  newName: string,
+  config: OutlineConfig,
+): Promise<RenameRefactorResult> {
+  const url = `${config.baseUrl}/projects/${encodeURIComponent(config.projectId)}/commits/${encodeURIComponent(
+    config.commitId,
+  )}/refactorings/rename`;
+  const controller = new AbortController();
+  const payload = await requestJson(url, controller.signal, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      elementId,
+      newName,
+      includeReferences: true,
+      updateReferences: true,
+    }),
+  });
+  if (!payload) {
+    return { patches: [], elements: [] };
+  }
+  return parseRenameResponse(payload);
+}
+
+function parseRenameResponse(payload: unknown): RenameRefactorResult {
+  if (!payload) {
+    return { patches: [], elements: [] };
+  }
+  if (!isRecord(payload)) {
+    throw new Error('Unexpected rename response shape.');
+  }
+  const root = isRecord(payload.data) ? (payload.data as Record<string, unknown>) : payload;
+  const container = isRecord(root.result) ? (root.result as Record<string, unknown>) : root;
+
+  const patchSources: unknown[] = [];
+  for (const key of ['patches', 'textEdits', 'edits', 'textChanges']) {
+    const candidate = container[key];
+    if (Array.isArray(candidate)) {
+      patchSources.push(...candidate);
+    }
+  }
+  const patches: TextEditPatch[] = [];
+  for (const entry of patchSources) {
+    const normalized = normalizeTextPatch(entry);
+    if (normalized) {
+      patches.push(normalized);
+    }
+  }
+
+  const elementSources: unknown[] = [];
+  for (const key of ['element', 'updatedElement', 'targetElement']) {
+    const candidate = container[key];
+    if (candidate) {
+      elementSources.push(candidate);
+    }
+  }
+  const list = container.updatedElements;
+  if (Array.isArray(list)) {
+    elementSources.push(...list);
+  }
+
+  const elements: ApiElementRecord[] = [];
+  for (const entry of elementSources) {
+    const normalized = normalizeElementRecordFromResponse(entry);
+    if (normalized) {
+      elements.push(normalized);
+    }
+  }
+
+  return { patches, elements };
+}
+
+function normalizeElementRecordFromResponse(value: unknown): ApiElementRecord | null {
+  if (!value) {
+    return null;
+  }
+  if (isRecord(value) && isRecord(value.data)) {
+    try {
+      return parseElementRecord({ data: value.data });
+    } catch (error) {
+      return null;
+    }
+  }
+  if (!isRecord(value) || typeof value.id !== 'string') {
+    return null;
+  }
+  return sanitizeElementRecord({
+    id: value.id,
+    name: typeof value.name === 'string' ? value.name : undefined,
+    classifierId: typeof value.classifierId === 'string' ? value.classifierId : undefined,
+    documentation: typeof value.documentation === 'string' ? value.documentation : undefined,
+    payload: isRecord(value.payload) ? (value.payload as Record<string, unknown>) : undefined,
+  });
+}
+
+function normalizeTextPatch(value: unknown): TextEditPatch | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const text = firstString(value.newText, value.text, value.replacementText, value.replacement, value.insertText, value.value);
+  if (typeof text !== 'string') {
+    return null;
+  }
+  const rangeSource = isRecord(value.range) ? (value.range as Record<string, unknown>) : value;
+  const start = extractPosition(rangeSource, ['start', 'from', 'begin']);
+  const end = extractPosition(rangeSource, ['end', 'to', 'finish']);
+  if (!start || !end) {
+    return null;
+  }
+  return {
+    range: {
+      startLineNumber: start.line,
+      startColumn: start.column,
+      endLineNumber: end.line,
+      endColumn: end.column,
+    },
+    text,
+  };
+}
+
+function extractPosition(source: Record<string, unknown>, keys: string[]): OutlinePosition | null {
+  for (const key of keys) {
+    const line = toInteger(
+      source[`${key}LineNumber`] ??
+        source[`${key}Line`] ??
+        source[`${key}Row`] ??
+        (isRecord(source[key]) ? (source[key] as Record<string, unknown>).line : undefined) ??
+        (isRecord(source[key]) ? (source[key] as Record<string, unknown>).lineNumber : undefined) ??
+        (isRecord(source[key]) ? (source[key] as Record<string, unknown>).row : undefined),
+    );
+    const column = toInteger(
+      source[`${key}Column`] ??
+        source[`${key}Character`] ??
+        source[`${key}Char`] ??
+        source[`${key}Offset`] ??
+        (isRecord(source[key]) ? (source[key] as Record<string, unknown>).column : undefined) ??
+        (isRecord(source[key]) ? (source[key] as Record<string, unknown>).character : undefined) ??
+        (isRecord(source[key]) ? (source[key] as Record<string, unknown>).char : undefined) ??
+        (isRecord(source[key]) ? (source[key] as Record<string, unknown>).offset : undefined),
+    );
+    if (line !== null && column !== null) {
+      return { line, column };
+    }
+    const nested = source[key];
+    if (isRecord(nested)) {
+      const nestedLine = toInteger(nested.line ?? nested.lineNumber ?? nested.row);
+      const nestedColumn = toInteger(nested.column ?? nested.character ?? nested.char ?? nested.offset);
+      if (nestedLine !== null && nestedColumn !== null) {
+        return { line: nestedLine, column: nestedColumn };
+      }
+    }
+  }
+  return null;
+}
+
+function toInteger(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const normalized = Math.trunc(value);
+    return normalized >= 1 ? normalized : 1;
+  }
+  if (typeof value === 'string' && value.trim().length) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      const normalized = Math.trunc(parsed);
+      return normalized >= 1 ? normalized : 1;
+    }
+  }
+  return null;
+}
+
+function applyOutlineRenameOptimistic(elementId: string, label: string): () => void {
+  const nodes = outlineNodesByElementId.get(elementId) ?? [];
+  const previousNodes = nodes.map((node) => ({ node, label: node.label }));
+  const previousRecord = outlineElementCache.get(elementId);
+  if (nodes.length) {
+    for (const entry of previousNodes) {
+      entry.node.label = label;
+    }
+    outlineRevision.value += 1;
+  }
+  if (previousRecord) {
+    outlineElementCache.set(elementId, { ...previousRecord, name: label });
+  }
+  return () => {
+    if (previousRecord) {
+      outlineElementCache.set(elementId, previousRecord);
+    }
+    for (const entry of previousNodes) {
+      entry.node.label = entry.label;
+    }
+    if (previousNodes.length) {
+      outlineRevision.value += 1;
+    }
+  };
+}
+
+function updateOutlineFromRecords(records: ApiElementRecord[]): void {
+  if (!records.length) {
+    return;
+  }
+  let dirty = false;
+  for (const record of records) {
+    outlineElementCache.set(record.id, record);
+    const nodes = outlineNodesByElementId.get(record.id);
+    if (!nodes || !nodes.length) {
+      continue;
+    }
+    const nextLabel = computeOutlineLabel(record);
+    const nextType = computeOutlineType(record);
+    const nextRange = extractOutlineRange(record);
+    for (const node of nodes) {
+      node.label = nextLabel;
+      node.type = nextType;
+      node.range = nextRange;
+    }
+    dirty = true;
+  }
+  if (dirty) {
+    outlineRevision.value += 1;
+  }
+}
+
+function applyTextPatches(edits: TextEditPatch[]): void {
+  if (!edits.length || !editorRef.value || !monacoApi) {
+    return;
+  }
+  const editor = editorRef.value;
+  const operations = edits
+    .map((edit) => ({
+      range: toMonacoRange(edit.range, monacoApi!),
+      text: edit.text,
+      forceMoveMarkers: true,
+    }))
+    .sort((a, b) => {
+      if (a.range.startLineNumber === b.range.startLineNumber) {
+        return b.range.startColumn - a.range.startColumn;
+      }
+      return b.range.startLineNumber - a.range.startLineNumber;
+    });
+  const selections = editor.getSelections();
+  editor.pushUndoStop();
+  editor.executeEdits('rename-refactor', operations);
+  editor.pushUndoStop();
+  if (selections) {
+    editor.setSelections(selections);
+  }
+  scheduleValidation(true);
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError';
+}
+
 function buildElementUrl(config: OutlineConfig, elementId?: string, suffix?: string) {
   let url = `${config.baseUrl}/projects/${encodeURIComponent(config.projectId)}/commits/${encodeURIComponent(
     config.commitId,
@@ -1271,8 +1666,12 @@ function buildElementUrl(config: OutlineConfig, elementId?: string, suffix?: str
   return url;
 }
 
-async function requestJson(url: string, signal: AbortSignal): Promise<unknown> {
-  const response = await fetch(url, { signal });
+async function requestJson(url: string, signal: AbortSignal, init?: RequestInit): Promise<unknown> {
+  const headers = new Headers(init?.headers ?? undefined);
+  if (!headers.has('Accept')) {
+    headers.set('Accept', 'application/json');
+  }
+  const response = await fetch(url, { ...init, signal, headers });
   if (response.status === 204) {
     if (!response.ok) {
       throw new Error(`Request failed with status ${response.status}`);
@@ -1471,6 +1870,7 @@ function rebuildOutlineIndexes(root: OutlineNode | null) {
     }
   };
   visit(root);
+  outlineRevision.value += 1;
 }
 
 function handleOutlineClick(node: OutlineNode) {
@@ -1536,6 +1936,15 @@ watch(outlineSelectedKey, (key) => {
     });
   }
 });
+
+watch(
+  selectedOutlineNode,
+  (node) => {
+    renameError.value = null;
+    renameDraft.value = node ? node.label : '';
+  },
+  { immediate: true },
+);
 
 function formatOutlineType(type?: string): string {
   if (!type) {
@@ -1724,7 +2133,10 @@ function applyMarkers(issues: NormalizedIssue[]) {
     startColumn: issue.range.startColumn,
     endLineNumber: issue.range.endLineNumber,
     endColumn: issue.range.endColumn,
-    tags: issue.quickFixes.length ? [monacoApi!.MarkerTag.Unnecessary] : undefined,
+    tags:
+      issue.quickFixes.length || inferImportCandidates(issue).length
+        ? [monacoApi!.MarkerTag.Unnecessary]
+        : undefined,
     relatedInformation: issue.elementId
       ? [
           {
@@ -1846,14 +2258,19 @@ function registerLanguageProviders(monaco: MonacoApi) {
 
           const fixes = issue.quickFixes.length
             ? issue.quickFixes
-            : [
-                {
-                  title: 'Review issue in validation service',
-                },
-              ];
+            : deriveHeuristicFixes(issue, model);
 
-          for (let idx = 0; idx < fixes.length; idx += 1) {
-            const fix = fixes[idx];
+          const fallbackFixes =
+            fixes.length > 0
+              ? fixes
+              : [
+                  {
+                    title: 'Review issue in validation service',
+                  },
+                ];
+
+          for (let idx = 0; idx < fallbackFixes.length; idx += 1) {
+            const fix = fallbackFixes[idx];
             const editRange = toMonacoRange(fix.range ?? issue.range, monaco);
             const edit =
               typeof fix.replacementText === 'string'
@@ -2138,6 +2555,139 @@ function normalizeFixes(raw: unknown): NormalizedFix[] {
   return fixes;
 }
 
+function deriveHeuristicFixes(
+  issue: NormalizedIssue,
+  model: Monaco.editor.ITextModel,
+): NormalizedFix[] {
+  const candidates = inferImportCandidates(issue);
+  if (!candidates.length) {
+    return [];
+  }
+
+  const insertionPoint = computeImportInsertionRange(model);
+  if (!insertionPoint) {
+    return [];
+  }
+
+  const eol = model.getEOL();
+  const fixes: NormalizedFix[] = [];
+
+  for (const identifier of candidates) {
+    if (modelHasImport(model, identifier)) {
+      continue;
+    }
+
+    fixes.push({
+      title: `Insert public import ${identifier}`,
+      replacementText: `public import ${identifier};${eol}`,
+      range: { ...insertionPoint },
+    });
+
+    fixes.push({
+      title: `Insert private import ${identifier}`,
+      replacementText: `private import ${identifier};${eol}`,
+      range: { ...insertionPoint },
+    });
+  }
+
+  return fixes;
+}
+
+function inferImportCandidates(issue: NormalizedIssue): string[] {
+  const message = issue.message;
+  const matches: string[] = [];
+
+  const patterns = [
+    /missing\s+(?:public\s+)?import(?:\s+(?:for|of))?\s+(?:element\s+)?['"]?([\w.:]+)['"]?/i,
+    /unresolved\s+(?:reference|ref(?:erence)?|identifier|element)\s+(?:to|for|of)?\s*(?:element\s+)?['"]?([\w.:]+)['"]?/i,
+    /cannot\s+resolve\s+(?:reference|ref(?:erence)?|identifier|element)\s+(?:to|for|of)?\s*(?:element\s+)?['"]?([\w.:]+)['"]?/i,
+    /no\s+import\s+(?:for|of)\s+(?:element\s+)?['"]?([\w.:]+)['"]?/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = pattern.exec(message);
+    if (match && match[1]) {
+      const sanitized = sanitizeImportCandidate(match[1]);
+      if (sanitized) {
+        matches.push(sanitized);
+      }
+    }
+  }
+
+  return Array.from(new Set(matches));
+}
+
+function sanitizeImportCandidate(value: string): string | null {
+  const trimmed = value.trim().replace(/[.;:]+$/, '').replace(/^:+/, '');
+  if (!trimmed) {
+    return null;
+  }
+  return trimmed;
+}
+
+function computeImportInsertionRange(model: Monaco.editor.ITextModel): NormalizedRange | null {
+  const lineCount = model.getLineCount();
+  if (lineCount === 0) {
+    return {
+      startLineNumber: 1,
+      startColumn: 1,
+      endLineNumber: 1,
+      endColumn: 1,
+    };
+  }
+
+  let insertBefore = 1;
+
+  for (let line = 1; line <= lineCount; line += 1) {
+    const content = model.getLineContent(line);
+    const trimmed = content.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+    if (trimmed.startsWith('--')) {
+      insertBefore = line + 1;
+      continue;
+    }
+    if (/^(?:public|private)?\s*import\b/i.test(trimmed)) {
+      insertBefore = line + 1;
+      continue;
+    }
+    if (/^package\b/i.test(trimmed)) {
+      insertBefore = line + 1;
+      continue;
+    }
+    break;
+  }
+
+  if (insertBefore > lineCount) {
+    const lastLine = lineCount;
+    const column = model.getLineLength(lastLine) + 1;
+    return {
+      startLineNumber: lastLine,
+      startColumn: column,
+      endLineNumber: lastLine,
+      endColumn: column,
+    };
+  }
+
+  return {
+    startLineNumber: insertBefore,
+    startColumn: 1,
+    endLineNumber: insertBefore,
+    endColumn: 1,
+  };
+}
+
+function modelHasImport(model: Monaco.editor.ITextModel, identifier: string): boolean {
+  const escaped = escapeRegExp(identifier);
+  const regex = new RegExp(`\\b(?:public|private)?\\s*import\\s+${escaped}\\b`);
+  return regex.test(model.getValue());
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function toMarkerSeverity(monaco: MonacoApi, severity: IssueSeverity) {
   switch (severity) {
     case 'warning':
@@ -2150,10 +2700,14 @@ function toMarkerSeverity(monaco: MonacoApi, severity: IssueSeverity) {
 }
 
 function badgeFixes(issue: NormalizedIssue): string[] {
-  if (issue.quickFixes.length === 0) {
-    return ['Quick fix available on hover'];
+  if (issue.quickFixes.length) {
+    return issue.quickFixes.map((fix) => fix.title);
   }
-  return issue.quickFixes.map((fix) => fix.title);
+  const inferred = inferImportCandidates(issue);
+  if (inferred.length) {
+    return inferred.map((identifier) => `Insert public import ${identifier}`);
+  }
+  return ['Quick fix available on hover'];
 }
 
 function severityLabel(severity: IssueSeverity) {
