@@ -19,6 +19,216 @@
     </header>
 
     <main class="main-content">
+      <aside class="timeline-rail">
+        <header class="timeline-header">
+          <div>
+            <h2>Timeline</h2>
+            <p>Projects, branches, commits, and tags</p>
+          </div>
+          <button
+            type="button"
+            class="timeline-refresh"
+            @click="refreshTimeline"
+            :disabled="timelineBusy || !normalizedApiBaseUrl"
+          >
+            {{ timelineBusy ? 'Refreshing…' : 'Refresh' }}
+          </button>
+        </header>
+        <div class="timeline-config">
+          <label>
+            Project
+            <select
+              v-model="timelineSelectedProjectId"
+              :disabled="timelineLoadingProjects || !timelineProjects.length"
+            >
+              <option value="" disabled>Select a project</option>
+              <option v-for="project in timelineProjects" :key="project.id" :value="project.id">
+                {{ project.name || project.id }}
+              </option>
+            </select>
+          </label>
+          <label>
+            Branch
+            <select v-model="timelineSelectedBranchId" :disabled="!timelineBranchOptions.length">
+              <option v-for="branch in timelineBranchOptions" :key="branch.id" :value="branch.id">
+                {{ branch.id }} · {{ branch.commitCount }} commits
+              </option>
+            </select>
+          </label>
+        </div>
+        <div class="timeline-body">
+          <p v-if="!normalizedApiBaseUrl" class="timeline-hint">
+            Provide the API base URL to load the project timeline.
+          </p>
+          <p v-else-if="timelineError" class="timeline-error">{{ timelineError }}</p>
+          <p v-else-if="timelineLoadingProjects || timelineLoadingCommits" class="timeline-status">
+            Loading timeline…
+          </p>
+          <p v-else-if="!timelineVisibleCommits.length" class="timeline-status">
+            No commits were found for the selected branch.
+          </p>
+          <ul v-else class="timeline-list">
+            <li v-for="commit in timelineVisibleCommits" :key="commit.id">
+              <button
+                type="button"
+                class="timeline-entry"
+                :class="{ active: timelineSelectedCommitId === commit.id }"
+                @click="selectTimelineCommit(commit.id)"
+              >
+                <span class="timeline-entry-title">{{ commit.message }}</span>
+                <span class="timeline-entry-meta">
+                  {{ formatCommitTime(commit.createdAt) }} · {{ commit.author }}
+                </span>
+                <span class="timeline-entry-meta">Branch · {{ commit.branchId }}</span>
+                <div v-if="commit.parentIds.length" class="timeline-parents">
+                  <span v-for="parent in commit.parentIds" :key="parent">
+                    Parent · {{ formatCommitShortId(parent) }}
+                  </span>
+                </div>
+                <div v-if="(timelineTagsByCommitId.get(commit.id) ?? []).length" class="timeline-tags">
+                  <span v-for="tag in timelineTagsByCommitId.get(commit.id) ?? []" :key="tag.id">
+                    {{ tag.name }}
+                  </span>
+                </div>
+              </button>
+            </li>
+          </ul>
+          <p v-if="timelineTagsError" class="timeline-warning">{{ timelineTagsError }}</p>
+        </div>
+        <section v-if="timelineSelectedCommit" class="timeline-actions">
+          <div class="timeline-commit-details">
+            <h3>{{ timelineSelectedCommit.message }}</h3>
+            <p>
+              {{ formatCommitTime(timelineSelectedCommit.createdAt) }} · {{ timelineSelectedCommit.author }}
+            </p>
+            <p>Branch · {{ timelineSelectedCommit.branchId }}</p>
+            <div
+              v-if="(timelineTagsByCommitId.get(timelineSelectedCommit.id) ?? []).length"
+              class="timeline-selected-tags"
+            >
+              <span v-for="tag in timelineTagsByCommitId.get(timelineSelectedCommit.id) ?? []" :key="tag.id">
+                {{ tag.name }}
+              </span>
+            </div>
+          </div>
+          <div class="timeline-feedback">
+            <p v-if="timelineActionStatus" class="timeline-status-message">{{ timelineActionStatus }}</p>
+            <p v-if="timelineActionError" class="timeline-error-message">{{ timelineActionError }}</p>
+          </div>
+          <form class="timeline-form" @submit.prevent="handleCreateBranch">
+            <label>
+              Create branch from this commit
+              <input
+                v-model="timelineBranchDraft"
+                type="text"
+                placeholder="feature/new-branch"
+                spellcheck="false"
+              />
+            </label>
+            <div class="timeline-form-actions">
+              <button
+                type="submit"
+                :disabled="
+                  timelineActionLoading ||
+                  !timelineBranchDraft ||
+                  !timelineSelectedProject ||
+                  !timelineSelectedCommit
+                "
+              >
+                {{ timelineActionLoading ? 'Creating…' : 'Create branch' }}
+              </button>
+            </div>
+          </form>
+          <form class="timeline-form" @submit.prevent="handleCreateTag">
+            <label>
+              Tag this commit
+              <input v-model="timelineTagDraft" type="text" placeholder="v1.0.0" spellcheck="false" />
+            </label>
+            <div class="timeline-form-actions">
+              <button
+                type="submit"
+                :disabled="
+                  timelineActionLoading || !timelineTagDraft || !timelineSelectedProject || !timelineSelectedCommit
+                "
+              >
+                {{ timelineActionLoading ? 'Saving…' : 'Create tag' }}
+              </button>
+            </div>
+          </form>
+          <form class="timeline-form" @submit.prevent="handleComputeDiff">
+            <label>
+              Compare against
+              <select v-model="timelineDiffTargetId" :disabled="timelineVisibleCommits.length < 2">
+                <option
+                  v-for="commit in timelineVisibleCommits"
+                  :key="commit.id"
+                  :value="commit.id"
+                  :disabled="commit.id === timelineSelectedCommitId"
+                >
+                  {{ commit.message }} · {{ formatCommitShortId(commit.id) }}
+                </option>
+              </select>
+            </label>
+            <div class="timeline-form-actions">
+              <button type="submit" :disabled="timelineDiffLoading || !timelineDiffTargetId">
+                {{ timelineDiffLoading ? 'Diffing…' : 'Diff commits' }}
+              </button>
+            </div>
+          </form>
+          <div class="timeline-diff-result" v-if="timelineDiffLoading">
+            <p class="timeline-status">Building diff…</p>
+          </div>
+          <div class="timeline-diff-result" v-else-if="timelineDiffError">
+            <p class="timeline-error">{{ timelineDiffError }}</p>
+          </div>
+          <div class="timeline-diff-result" v-else-if="timelineDiffResult">
+            <h4>Diff summary</h4>
+            <p>
+              {{ timelineDiffResult.added.length }} added ·
+              {{ timelineDiffResult.removed.length }} removed ·
+              {{ timelineDiffResult.changed.length }} changed
+            </p>
+            <p
+              v-if="
+                !timelineDiffResult.added.length &&
+                !timelineDiffResult.removed.length &&
+                !timelineDiffResult.changed.length
+              "
+            >
+              No differences detected between the selected commits.
+            </p>
+            <div v-if="timelineDiffResult.added.length">
+              <h5>Added</h5>
+              <ul>
+                <li v-for="item in timelineDiffResult.added.slice(0, 5)" :key="item.id">
+                  {{ item.name ?? item.id }} ({{ item.classifierId }})
+                </li>
+              </ul>
+            </div>
+            <div v-if="timelineDiffResult.removed.length">
+              <h5>Removed</h5>
+              <ul>
+                <li v-for="item in timelineDiffResult.removed.slice(0, 5)" :key="item.id">
+                  {{ item.name ?? item.id }} ({{ item.classifierId }})
+                </li>
+              </ul>
+            </div>
+            <div v-if="timelineDiffResult.changed.length">
+              <h5>Changed</h5>
+              <ul>
+                <li v-for="item in timelineDiffResult.changed.slice(0, 5)" :key="item.id">
+                  {{ item.after.name ?? item.id }} ({{ item.after.classifierId }})
+                </li>
+              </ul>
+            </div>
+          </div>
+          <div class="timeline-form-actions timeline-restore">
+            <button type="button" @click="restoreSelectedCommit" :disabled="timelineActionLoading">
+              Restore to editor
+            </button>
+          </div>
+        </section>
+      </aside>
       <section class="editor-container">
         <div ref="monacoRoot" class="monaco-container" />
       </section>
@@ -148,6 +358,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch 
 import loader from '@monaco-editor/loader';
 
 import type * as Monaco from 'monaco-editor';
+import { SysMLSDK } from '../../../src/sysml-sdk';
+import type { CommitSummary, ElementRecord, ProjectSummary } from '../../../src/generated/types';
 
 type MonacoApi = typeof import('monaco-editor');
 
@@ -207,6 +419,37 @@ interface OutlineConfig {
 interface OutlinePosition {
   line: number;
   column: number;
+}
+
+interface TimelineTag {
+  id: string;
+  name: string;
+  commitId: string;
+  createdAt?: string;
+}
+
+interface TimelineBranchOption {
+  id: string;
+  commitCount: number;
+  lastCommitAt: number;
+}
+
+interface TimelineElementSnapshot {
+  id: string;
+  name?: string;
+  classifierId: string;
+}
+
+interface TimelineElementChange {
+  id: string;
+  before: TimelineElementSnapshot;
+  after: TimelineElementSnapshot;
+}
+
+interface TimelineDiffResult {
+  added: TimelineElementSnapshot[];
+  removed: TimelineElementSnapshot[];
+  changed: TimelineElementChange[];
 }
 
 const defaultModel = `package Example::DriveUnit {
@@ -296,6 +539,103 @@ const outlineNodesByElementId = new Map<string, OutlineNode[]>();
 const outlineElementCache = new Map<string, ApiElementRecord>();
 const outlineOwnedCache = new Map<string, ApiElementRecord[]>();
 
+const normalizedApiBaseUrl = computed(() => sysmlApiBaseUrl.value.trim().replace(/\/+$/, ''));
+
+const timelineSdk = shallowRef<SysMLSDK | null>(null);
+const timelineProjects = ref<ProjectSummary[]>([]);
+const timelineLoadingProjects = ref(false);
+const timelineCommits = ref<CommitSummary[]>([]);
+const timelineLoadingCommits = ref(false);
+const timelineTags = ref<TimelineTag[]>([]);
+const timelineLoadingTags = ref(false);
+const timelineError = ref<string | null>(null);
+const timelineTagsError = ref<string | null>(null);
+const timelineSelectedProjectId = ref('');
+const timelineSelectedBranchId = ref('');
+const timelineSelectedCommitId = ref('');
+const timelineBranchDraft = ref('');
+const timelineTagDraft = ref('');
+const timelineActionStatus = ref<string | null>(null);
+const timelineActionError = ref<string | null>(null);
+const timelineActionLoading = ref(false);
+const timelineDiffTargetId = ref<string | null>(null);
+const timelineDiffLoading = ref(false);
+const timelineDiffError = ref<string | null>(null);
+const timelineDiffResult = ref<TimelineDiffResult | null>(null);
+
+const timelineBusy = computed(
+  () => timelineLoadingProjects.value || timelineLoadingCommits.value || timelineLoadingTags.value,
+);
+const timelineSelectedProject = computed(
+  () => timelineProjects.value.find((project) => project.id === timelineSelectedProjectId.value) ?? null,
+);
+const timelineBranchOptions = computed<TimelineBranchOption[]>(() => {
+  const project = timelineSelectedProject.value;
+  const commits = timelineCommits.value;
+  const map = new Map<string, TimelineBranchOption>();
+  for (const commit of commits) {
+    const timestamp = Date.parse(commit.createdAt);
+    const createdAt = Number.isNaN(timestamp) ? 0 : timestamp;
+    const existing = map.get(commit.branchId);
+    if (existing) {
+      existing.commitCount += 1;
+      existing.lastCommitAt = Math.max(existing.lastCommitAt, createdAt);
+    } else {
+      map.set(commit.branchId, {
+        id: commit.branchId,
+        commitCount: 1,
+        lastCommitAt: createdAt,
+      });
+    }
+  }
+  const options = Array.from(map.values());
+  options.sort((a, b) => {
+    if (project?.defaultBranch && a.id === project.defaultBranch) {
+      return -1;
+    }
+    if (project?.defaultBranch && b.id === project.defaultBranch) {
+      return 1;
+    }
+    return b.lastCommitAt - a.lastCommitAt;
+  });
+  return options;
+});
+const timelineVisibleCommits = computed<CommitSummary[]>(() => {
+  const branchId = timelineSelectedBranchId.value;
+  const source = branchId
+    ? timelineCommits.value.filter((commit) => commit.branchId === branchId)
+    : [...timelineCommits.value];
+  return source.sort((a, b) => {
+    const left = Date.parse(a.createdAt);
+    const right = Date.parse(b.createdAt);
+    const leftTs = Number.isNaN(left) ? 0 : left;
+    const rightTs = Number.isNaN(right) ? 0 : right;
+    return rightTs - leftTs;
+  });
+});
+const timelineSelectedCommit = computed<CommitSummary | null>(
+  () => timelineVisibleCommits.value.find((commit) => commit.id === timelineSelectedCommitId.value) ?? null,
+);
+const timelineTagsByCommitId = computed(() => {
+  const map = new Map<string, TimelineTag[]>();
+  for (const tag of timelineTags.value) {
+    const bucket = map.get(tag.commitId);
+    if (bucket) {
+      bucket.push(tag);
+    } else {
+      map.set(tag.commitId, [tag]);
+    }
+  }
+  for (const bucket of map.values()) {
+    bucket.sort((a, b) => a.name.localeCompare(b.name));
+  }
+  return map;
+});
+
+let timelineProjectsRequestId = 0;
+let timelineCommitsRequestId = 0;
+let timelineTagsRequestId = 0;
+
 onMounted(async () => {
   loader.config({
     paths: {
@@ -367,6 +707,580 @@ onMounted(async () => {
     }),
   );
 });
+
+watch(
+  normalizedApiBaseUrl,
+  (base) => {
+    timelineProjectsRequestId = 0;
+    timelineCommitsRequestId = 0;
+    timelineTagsRequestId = 0;
+    timelineProjects.value = [];
+    timelineCommits.value = [];
+    timelineTags.value = [];
+    timelineError.value = null;
+    timelineTagsError.value = null;
+    timelineSelectedProjectId.value = '';
+    timelineSelectedBranchId.value = '';
+    timelineSelectedCommitId.value = '';
+    timelineBranchDraft.value = '';
+    timelineTagDraft.value = '';
+    timelineDiffTargetId.value = null;
+    timelineDiffResult.value = null;
+    timelineDiffError.value = null;
+    timelineActionStatus.value = null;
+    timelineActionError.value = null;
+    timelineSdk.value = base ? new SysMLSDK({ baseUrl: base }) : null;
+    if (timelineSdk.value) {
+      loadTimelineProjects().catch((error) => {
+        console.error('Timeline project load error', error);
+      });
+    }
+  },
+  { immediate: true },
+);
+
+watch(timelineSelectedProjectId, (projectId) => {
+  timelineSelectedBranchId.value = '';
+  timelineSelectedCommitId.value = '';
+  timelineDiffTargetId.value = null;
+  timelineDiffResult.value = null;
+  timelineDiffError.value = null;
+  timelineBranchDraft.value = '';
+  timelineTagDraft.value = '';
+  timelineActionStatus.value = null;
+  timelineActionError.value = null;
+  if (!projectId || !timelineSdk.value) {
+    timelineCommits.value = [];
+    timelineTags.value = [];
+    return;
+  }
+  loadTimelineCommits(projectId).catch((error) => {
+    console.error('Timeline commit load error', error);
+  });
+  loadTimelineTags(projectId).catch((error) => {
+    console.error('Timeline tag load error', error);
+  });
+});
+
+watch(
+  timelineBranchOptions,
+  (options) => {
+    if (!options.length) {
+      if (timelineSelectedBranchId.value) {
+        timelineSelectedBranchId.value = '';
+      }
+      return;
+    }
+    if (options.some((option) => option.id === timelineSelectedBranchId.value)) {
+      return;
+    }
+    const defaultBranch = timelineSelectedProject.value?.defaultBranch;
+    const fallback = (defaultBranch && options.find((option) => option.id === defaultBranch)) ?? options[0];
+    if (fallback.id !== timelineSelectedBranchId.value) {
+      timelineSelectedBranchId.value = fallback.id;
+    }
+  },
+  { immediate: true },
+);
+
+watch(
+  timelineVisibleCommits,
+  (commits) => {
+    if (!commits.length) {
+      if (timelineSelectedCommitId.value) {
+        timelineSelectedCommitId.value = '';
+      }
+      return;
+    }
+    if (!commits.some((commit) => commit.id === timelineSelectedCommitId.value)) {
+      timelineSelectedCommitId.value = commits[0].id;
+    }
+  },
+  { immediate: true },
+);
+
+watch(
+  [timelineSelectedCommitId, timelineVisibleCommits],
+  ([selectedId, commits]) => {
+    if (!commits.length) {
+      timelineDiffTargetId.value = null;
+      return;
+    }
+    if (
+      selectedId &&
+      timelineDiffTargetId.value &&
+      timelineDiffTargetId.value !== selectedId &&
+      commits.some((commit) => commit.id === timelineDiffTargetId.value)
+    ) {
+      return;
+    }
+    const fallback = commits.find((commit) => commit.id !== selectedId);
+    timelineDiffTargetId.value = fallback ? fallback.id : null;
+  },
+  { immediate: true },
+);
+
+watch(timelineSelectedCommitId, () => {
+  timelineActionStatus.value = null;
+  timelineActionError.value = null;
+  timelineBranchDraft.value = '';
+  timelineTagDraft.value = '';
+});
+
+watch(
+  [timelineSelectedCommitId, timelineDiffTargetId],
+  () => {
+    timelineDiffResult.value = null;
+    timelineDiffError.value = null;
+  },
+);
+
+async function loadTimelineProjects(): Promise<void> {
+  const sdk = timelineSdk.value;
+  if (!sdk) {
+    return;
+  }
+  const requestId = ++timelineProjectsRequestId;
+  timelineLoadingProjects.value = true;
+  timelineError.value = null;
+  try {
+    const response = await sdk.listProjects({ limit: 100 });
+    if (requestId !== timelineProjectsRequestId) {
+      return;
+    }
+    timelineProjects.value = response.items;
+    if (!response.items.some((project) => project.id === timelineSelectedProjectId.value)) {
+      timelineSelectedProjectId.value = response.items[0]?.id ?? '';
+    }
+  } catch (error) {
+    if (requestId === timelineProjectsRequestId) {
+      timelineProjects.value = [];
+      timelineError.value = toErrorMessage(error);
+      timelineSelectedProjectId.value = '';
+    }
+  } finally {
+    if (requestId === timelineProjectsRequestId) {
+      timelineLoadingProjects.value = false;
+    }
+  }
+}
+
+async function loadTimelineCommits(projectId: string): Promise<void> {
+  const sdk = timelineSdk.value;
+  if (!sdk) {
+    return;
+  }
+  const requestId = ++timelineCommitsRequestId;
+  timelineLoadingCommits.value = true;
+  timelineError.value = null;
+  try {
+    const commits: CommitSummary[] = [];
+    let cursor: string | undefined;
+    const LIMIT = 100;
+    const MAX_PAGES = 10;
+    for (let page = 0; page < MAX_PAGES; page += 1) {
+      const response = await sdk.listCommits({ projectId, cursor, limit: LIMIT });
+      commits.push(...response.items);
+      if (!response.cursor) {
+        break;
+      }
+      cursor = response.cursor;
+    }
+    if (requestId !== timelineCommitsRequestId) {
+      return;
+    }
+    timelineCommits.value = commits;
+  } catch (error) {
+    if (requestId === timelineCommitsRequestId) {
+      timelineCommits.value = [];
+      timelineError.value = toErrorMessage(error);
+    }
+  } finally {
+    if (requestId === timelineCommitsRequestId) {
+      timelineLoadingCommits.value = false;
+    }
+  }
+}
+
+async function loadTimelineTags(projectId: string): Promise<void> {
+  const baseUrl = normalizedApiBaseUrl.value;
+  if (!baseUrl) {
+    timelineTags.value = [];
+    timelineTagsError.value = null;
+    return;
+  }
+  const requestId = ++timelineTagsRequestId;
+  timelineLoadingTags.value = true;
+  timelineTagsError.value = null;
+  try {
+    const response = await fetch(`${baseUrl}/projects/${encodeURIComponent(projectId)}/tags`);
+    if (!response.ok) {
+      throw new Error(`Failed to load tags (${response.status})`);
+    }
+    if (response.status === 204) {
+      if (requestId === timelineTagsRequestId) {
+        timelineTags.value = [];
+      }
+      return;
+    }
+    const payload = await response.json();
+    if (requestId !== timelineTagsRequestId) {
+      return;
+    }
+    timelineTags.value = parseTimelineTags(payload);
+  } catch (error) {
+    if (requestId === timelineTagsRequestId) {
+      timelineTags.value = [];
+      timelineTagsError.value = toErrorMessage(error);
+    }
+  } finally {
+    if (requestId === timelineTagsRequestId) {
+      timelineLoadingTags.value = false;
+    }
+  }
+}
+
+async function refreshTimeline(): Promise<void> {
+  if (!timelineSdk.value) {
+    timelineError.value = 'Provide a valid API base URL before refreshing the timeline.';
+    return;
+  }
+  timelineError.value = null;
+  await loadTimelineProjects();
+  const projectId = timelineSelectedProjectId.value;
+  if (projectId) {
+    await Promise.all([loadTimelineCommits(projectId), loadTimelineTags(projectId)]);
+  }
+}
+
+function selectTimelineCommit(commitId: string) {
+  if (timelineSelectedCommitId.value !== commitId) {
+    timelineSelectedCommitId.value = commitId;
+  }
+}
+
+function formatCommitTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
+}
+
+function formatCommitShortId(id: string): string {
+  if (id.length <= 12) {
+    return id;
+  }
+  return `${id.slice(0, 7)}…`;
+}
+
+async function handleCreateBranch(): Promise<void> {
+  if (timelineActionLoading.value) {
+    return;
+  }
+  const project = timelineSelectedProject.value;
+  const commit = timelineSelectedCommit.value;
+  const branchName = timelineBranchDraft.value.trim();
+  const baseUrl = normalizedApiBaseUrl.value;
+  if (!project || !commit) {
+    timelineActionError.value = 'Select a project and commit before creating a branch.';
+    return;
+  }
+  if (!branchName) {
+    timelineActionError.value = 'Branch name is required.';
+    return;
+  }
+  if (!baseUrl) {
+    timelineActionError.value = 'Provide the API base URL before creating a branch.';
+    return;
+  }
+  timelineActionLoading.value = true;
+  timelineActionStatus.value = null;
+  timelineActionError.value = null;
+  try {
+    const response = await fetch(`${baseUrl}/projects/${encodeURIComponent(project.id)}/branches`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: branchName,
+        name: branchName,
+        fromCommitId: commit.id,
+      }),
+    });
+    if (!response.ok && response.status !== 204) {
+      const detail = await extractResponseMessage(response);
+      throw new Error(detail ?? `Branch creation failed with status ${response.status}`);
+    }
+    timelineActionStatus.value = `Branch "${branchName}" created from commit ${formatCommitShortId(commit.id)}.`;
+    timelineBranchDraft.value = '';
+    await loadTimelineCommits(project.id);
+  } catch (error) {
+    timelineActionError.value = toErrorMessage(error);
+  } finally {
+    timelineActionLoading.value = false;
+  }
+}
+
+async function handleCreateTag(): Promise<void> {
+  if (timelineActionLoading.value) {
+    return;
+  }
+  const project = timelineSelectedProject.value;
+  const commit = timelineSelectedCommit.value;
+  const tagName = timelineTagDraft.value.trim();
+  const baseUrl = normalizedApiBaseUrl.value;
+  if (!project || !commit) {
+    timelineActionError.value = 'Select a project and commit before creating a tag.';
+    return;
+  }
+  if (!tagName) {
+    timelineActionError.value = 'Tag name is required.';
+    return;
+  }
+  if (!baseUrl) {
+    timelineActionError.value = 'Provide the API base URL before creating a tag.';
+    return;
+  }
+  timelineActionLoading.value = true;
+  timelineActionStatus.value = null;
+  timelineActionError.value = null;
+  try {
+    const response = await fetch(`${baseUrl}/projects/${encodeURIComponent(project.id)}/tags`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: tagName,
+        name: tagName,
+        commitId: commit.id,
+      }),
+    });
+    if (!response.ok && response.status !== 204) {
+      const detail = await extractResponseMessage(response);
+      throw new Error(detail ?? `Tag creation failed with status ${response.status}`);
+    }
+    timelineActionStatus.value = `Tag "${tagName}" added to commit ${formatCommitShortId(commit.id)}.`;
+    timelineTagDraft.value = '';
+    await loadTimelineTags(project.id);
+  } catch (error) {
+    timelineActionError.value = toErrorMessage(error);
+  } finally {
+    timelineActionLoading.value = false;
+  }
+}
+
+async function handleComputeDiff(): Promise<void> {
+  const project = timelineSelectedProject.value;
+  const sourceCommit = timelineSelectedCommit.value;
+  const targetCommitId = timelineDiffTargetId.value;
+  const sdk = timelineSdk.value;
+  if (!project || !sourceCommit || !targetCommitId) {
+    timelineDiffError.value = 'Select two commits to compare.';
+    timelineDiffResult.value = null;
+    return;
+  }
+  if (!sdk) {
+    timelineDiffError.value = 'Provide the API base URL before diffing commits.';
+    timelineDiffResult.value = null;
+    return;
+  }
+  if (sourceCommit.id === targetCommitId) {
+    timelineDiffError.value = 'Choose a different commit to compare against.';
+    timelineDiffResult.value = null;
+    return;
+  }
+  timelineDiffLoading.value = true;
+  timelineDiffError.value = null;
+  timelineDiffResult.value = null;
+  try {
+    const [baseline, target] = await Promise.all([
+      fetchAllElementsForCommit(project.id, sourceCommit.id, sdk),
+      fetchAllElementsForCommit(project.id, targetCommitId, sdk),
+    ]);
+    timelineDiffResult.value = computeElementDiff(baseline, target);
+  } catch (error) {
+    timelineDiffError.value = toErrorMessage(error);
+    timelineDiffResult.value = null;
+  } finally {
+    timelineDiffLoading.value = false;
+  }
+}
+
+async function fetchAllElementsForCommit(
+  projectId: string,
+  commitId: string,
+  sdk: SysMLSDK,
+): Promise<ElementRecord[]> {
+  const items: ElementRecord[] = [];
+  let cursor: string | undefined;
+  const LIMIT = 200;
+  const MAX_PAGES = 15;
+  for (let page = 0; page < MAX_PAGES; page += 1) {
+    const response = await sdk.listElements({ projectId, commitId, cursor, limit: LIMIT });
+    items.push(...response.items);
+    if (!response.cursor) {
+      break;
+    }
+    cursor = response.cursor;
+  }
+  return items;
+}
+
+function computeElementDiff(
+  baseline: ElementRecord[],
+  target: ElementRecord[],
+): TimelineDiffResult {
+  const baselineMap = new Map<string, ElementRecord>();
+  for (const element of baseline) {
+    baselineMap.set(element.id, element);
+  }
+  const targetMap = new Map<string, ElementRecord>();
+  for (const element of target) {
+    targetMap.set(element.id, element);
+  }
+  const added: TimelineElementSnapshot[] = [];
+  const removed: TimelineElementSnapshot[] = [];
+  const changed: TimelineElementChange[] = [];
+  for (const [id, element] of targetMap) {
+    const previous = baselineMap.get(id);
+    if (!previous) {
+      added.push(toTimelineSnapshot(element));
+      continue;
+    }
+    if (fingerprintElement(previous) !== fingerprintElement(element)) {
+      changed.push({
+        id,
+        before: toTimelineSnapshot(previous),
+        after: toTimelineSnapshot(element),
+      });
+    }
+  }
+  for (const [id, element] of baselineMap) {
+    if (!targetMap.has(id)) {
+      removed.push(toTimelineSnapshot(element));
+    }
+  }
+  added.sort((a, b) => a.id.localeCompare(b.id));
+  removed.sort((a, b) => a.id.localeCompare(b.id));
+  changed.sort((a, b) => a.id.localeCompare(b.id));
+  return { added, removed, changed };
+}
+
+function toTimelineSnapshot(element: ElementRecord): TimelineElementSnapshot {
+  return {
+    id: element.id,
+    name: element.name,
+    classifierId: element.classifierId,
+  };
+}
+
+function fingerprintElement(element: ElementRecord): string {
+  return stableSerialize(
+    sortObject({
+      name: element.name ?? null,
+      documentation: element.documentation ?? null,
+      classifierId: element.classifierId,
+      payload: element.payload,
+    }),
+  );
+}
+
+function sortObject(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => sortObject(item));
+  }
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) =>
+      left.localeCompare(right),
+    );
+    const result: Record<string, unknown> = {};
+    for (const [key, entryValue] of entries) {
+      result[key] = sortObject(entryValue);
+    }
+    return result;
+  }
+  return value;
+}
+
+function stableSerialize(value: unknown): string {
+  return JSON.stringify(sortObject(value));
+}
+
+async function extractResponseMessage(response: Response): Promise<string | undefined> {
+  try {
+    const text = await response.text();
+    if (!text) {
+      return undefined;
+    }
+    try {
+      const payload = JSON.parse(text) as Record<string, unknown>;
+      const message =
+        payload.message ?? payload.error ?? payload.detail ?? payload.description ?? payload.title;
+      if (typeof message === 'string' && message.trim()) {
+        return message;
+      }
+    } catch {
+      // Ignore JSON parse errors and fall back to the plain text body
+    }
+    return text;
+  } catch {
+    return undefined;
+  }
+}
+
+function toErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  if (typeof error === 'string') {
+    return error;
+  }
+  return 'An unexpected error occurred.';
+}
+
+function parseTimelineTags(payload: unknown): TimelineTag[] {
+  const source = Array.isArray(payload)
+    ? payload
+    : Array.isArray((payload as Record<string, unknown>)?.items)
+      ? ((payload as Record<string, unknown>).items as unknown[])
+      : Array.isArray((payload as Record<string, unknown>)?.data)
+        ? ((payload as Record<string, unknown>).data as unknown[])
+        : [];
+  const unique = new Map<string, TimelineTag>();
+  for (const entry of source) {
+    if (!entry || typeof entry !== 'object') {
+      continue;
+    }
+    const record = entry as Record<string, unknown>;
+    const nameCandidate = record.name ?? record.tag ?? record.label ?? record.id;
+    const name = typeof nameCandidate === 'string' ? nameCandidate : undefined;
+    const commitCandidate =
+      record.commitId ?? record.targetCommitId ?? record.commit ?? record.referenceCommitId;
+    const commitId = typeof commitCandidate === 'string' ? commitCandidate : undefined;
+    if (!name || !commitId) {
+      continue;
+    }
+    const idCandidate = record.id ?? `${commitId}:${name}`;
+    const id = typeof idCandidate === 'string' ? idCandidate : `${commitId}:${name}`;
+    const createdAtCandidate = record.createdAt ?? record.timestamp ?? record.created ?? record.date;
+    const createdAt = typeof createdAtCandidate === 'string' ? createdAtCandidate : undefined;
+    unique.set(id, { id, name, commitId, createdAt });
+  }
+  const result = Array.from(unique.values());
+  result.sort((a, b) => a.name.localeCompare(b.name));
+  return result;
+}
+
+function restoreSelectedCommit() {
+  const project = timelineSelectedProject.value;
+  const commit = timelineSelectedCommit.value;
+  if (!project || !commit) {
+    return;
+  }
+  outlineProjectId.value = project.id;
+  outlineCommitId.value = commit.id;
+  timelineActionStatus.value = `Outline configured to ${project.name || project.id} at ${formatCommitShortId(commit.id)}.`;
+  timelineActionError.value = null;
+}
 
 watch(
   [sysmlApiBaseUrl, outlineProjectId, outlineCommitId, outlineRootElementId],
