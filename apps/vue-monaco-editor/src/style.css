@@ -81,11 +81,22 @@ body {
 .main-content {
   flex: 1 1 auto;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
+  grid-template-columns: 300px minmax(0, 1fr) 320px;
+  grid-template-areas: 'timeline editor sidebar';
+  min-height: 0;
+}
+
+.timeline-rail {
+  grid-area: timeline;
+  border-right: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(15, 23, 42, 0.75);
+  display: flex;
+  flex-direction: column;
   min-height: 0;
 }
 
 .editor-container {
+  grid-area: editor;
   position: relative;
   min-height: 0;
 }
@@ -132,11 +143,324 @@ body {
 }
 
 .sidebar {
+  grid-area: sidebar;
   border-left: 1px solid rgba(148, 163, 184, 0.2);
   background: rgba(15, 23, 42, 0.65);
   display: flex;
   flex-direction: column;
   min-height: 0;
+}
+
+.timeline-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 1rem 1.25rem 0.75rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.timeline-header h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.timeline-header p {
+  margin: 0.25rem 0 0;
+  font-size: 0.75rem;
+  opacity: 0.65;
+}
+
+.timeline-refresh {
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  border-radius: 0.5rem;
+  padding: 0.35rem 0.75rem;
+  background: rgba(30, 41, 59, 0.8);
+  color: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.timeline-refresh:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.timeline-refresh:not(:disabled):hover {
+  background: rgba(51, 65, 85, 0.9);
+}
+
+.timeline-config {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.75rem 1.25rem 1rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.timeline-config label {
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.8;
+}
+
+.timeline-config select {
+  background: rgba(15, 23, 42, 0.8);
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.6rem;
+  color: inherit;
+  font-size: 0.85rem;
+}
+
+.timeline-config select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.timeline-body {
+  flex: 1 1 auto;
+  padding: 1rem 1.25rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.timeline-status,
+.timeline-hint,
+.timeline-error,
+.timeline-warning {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.timeline-status {
+  opacity: 0.7;
+}
+
+.timeline-hint {
+  opacity: 0.65;
+}
+
+.timeline-error {
+  color: #fecaca;
+}
+
+.timeline-warning {
+  color: #facc15;
+}
+
+.timeline-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.timeline-entry {
+  width: 100%;
+  text-align: left;
+  background: rgba(30, 41, 59, 0.6);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 0.75rem;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  color: inherit;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.timeline-entry:hover {
+  border-color: rgba(96, 165, 250, 0.6);
+}
+
+.timeline-entry.active {
+  border-color: rgba(59, 130, 246, 0.9);
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.35);
+  background: rgba(30, 41, 59, 0.75);
+}
+
+.timeline-entry-title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.timeline-entry-meta {
+  font-size: 0.75rem;
+  opacity: 0.7;
+}
+
+.timeline-parents {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+  opacity: 0.7;
+}
+
+.timeline-parents span {
+  background: rgba(148, 163, 184, 0.18);
+  border-radius: 999px;
+  padding: 0.2rem 0.5rem;
+}
+
+.timeline-tags,
+.timeline-selected-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.timeline-tags span,
+.timeline-selected-tags span {
+  border-radius: 999px;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.72rem;
+  background: rgba(59, 130, 246, 0.2);
+}
+
+.timeline-selected-tags span {
+  background: rgba(34, 197, 94, 0.25);
+}
+
+.timeline-actions {
+  border-top: 1px solid rgba(148, 163, 184, 0.1);
+  padding: 1rem 1.25rem 1.25rem;
+  display: grid;
+  gap: 1rem;
+  background: rgba(15, 23, 42, 0.9);
+}
+
+.timeline-commit-details h3 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.timeline-commit-details p {
+  margin: 0.25rem 0 0;
+  font-size: 0.8rem;
+  opacity: 0.75;
+}
+
+.timeline-feedback {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.timeline-status-message {
+  margin: 0;
+  font-size: 0.78rem;
+  color: #bbf7d0;
+}
+
+.timeline-error-message {
+  margin: 0;
+  font-size: 0.78rem;
+  color: #fecaca;
+}
+
+.timeline-form {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.timeline-form label {
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+}
+
+.timeline-form input,
+.timeline-form select {
+  background: rgba(15, 23, 42, 0.8);
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.6rem;
+  color: inherit;
+  font-size: 0.85rem;
+}
+
+.timeline-form select {
+  appearance: none;
+}
+
+.timeline-form input:disabled,
+.timeline-form select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.timeline-form-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.timeline-form-actions button {
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  border-radius: 0.5rem;
+  padding: 0.4rem 0.75rem;
+  background: rgba(30, 41, 59, 0.8);
+  color: inherit;
+  cursor: pointer;
+}
+
+.timeline-form-actions button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.timeline-form-actions button:not(:disabled):hover {
+  background: rgba(51, 65, 85, 0.9);
+}
+
+.timeline-diff-result {
+  background: rgba(30, 41, 59, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 0.75rem;
+  padding: 0.75rem;
+  display: grid;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+}
+
+.timeline-diff-result h4 {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.timeline-diff-result h5 {
+  margin: 0.35rem 0 0.25rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.timeline-diff-result ul {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+.timeline-diff-result li {
+  margin: 0.15rem 0;
+}
+
+.timeline-restore {
+  justify-content: stretch;
+}
+
+.timeline-restore button {
+  width: 100%;
 }
 
 .sidebar section {
@@ -697,6 +1021,15 @@ body {
 @media (max-width: 1080px) {
   .main-content {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      'timeline'
+      'editor'
+      'sidebar';
+  }
+
+  .timeline-rail {
+    border-right: none;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.2);
   }
 
   .sidebar {
