@@ -3899,7 +3899,7 @@ function applyMarkers(issues: NormalizedIssue[]) {
     endLineNumber: issue.range.endLineNumber,
     endColumn: issue.range.endColumn,
     tags:
-      issue.quickFixes.length || inferImportCandidates(issue).length
+      issue.quickFixes.length || inferImportCandidates(issue, model).length
         ? [monacoApi!.MarkerTag.Unnecessary]
         : undefined,
     relatedInformation: issue.elementId
@@ -4324,7 +4324,7 @@ function deriveHeuristicFixes(
   issue: NormalizedIssue,
   model: Monaco.editor.ITextModel,
 ): NormalizedFix[] {
-  const candidates = inferImportCandidates(issue);
+  const candidates = inferImportCandidates(issue, model);
   if (!candidates.length) {
     return [];
   }
@@ -4358,7 +4358,10 @@ function deriveHeuristicFixes(
   return fixes;
 }
 
-function inferImportCandidates(issue: NormalizedIssue): string[] {
+function inferImportCandidates(
+  issue: NormalizedIssue,
+  model?: Monaco.editor.ITextModel | null,
+): string[] {
   const message = issue.message;
   const matches: string[] = [];
 
@@ -4367,12 +4370,53 @@ function inferImportCandidates(issue: NormalizedIssue): string[] {
     /unresolved\s+(?:reference|ref(?:erence)?|identifier|element)\s+(?:to|for|of)?\s*(?:element\s+)?['"]?([\w.:]+)['"]?/i,
     /cannot\s+resolve\s+(?:reference|ref(?:erence)?|identifier|element)\s+(?:to|for|of)?\s*(?:element\s+)?['"]?([\w.:]+)['"]?/i,
     /no\s+import\s+(?:for|of)\s+(?:element\s+)?['"]?([\w.:]+)['"]?/i,
+    /import\s+required\s+for\s+(?:element\s+)?['"]?([\w.:]+)['"]?/i,
   ];
+
+  let messageIndicatesImport = false;
 
   for (const pattern of patterns) {
     const match = pattern.exec(message);
     if (match && match[1]) {
+      messageIndicatesImport = true;
       const sanitized = sanitizeImportCandidate(match[1]);
+      if (sanitized) {
+        matches.push(sanitized);
+      }
+    }
+  }
+
+  if (!messageIndicatesImport) {
+    return Array.from(new Set(matches));
+  }
+
+  if (typeof issue.elementId === 'string') {
+    const sanitized = sanitizeImportCandidate(issue.elementId);
+    if (sanitized) {
+      matches.push(sanitized);
+    }
+  }
+
+  if (model) {
+    const rangeText = model.getValueInRange({
+      startLineNumber: issue.range.startLineNumber,
+      startColumn: issue.range.startColumn,
+      endLineNumber: issue.range.endLineNumber,
+      endColumn: issue.range.endColumn,
+    });
+    if (rangeText) {
+      const sanitized = sanitizeImportCandidate(rangeText);
+      if (sanitized) {
+        matches.push(sanitized);
+      }
+    }
+
+    const word = model.getWordAtPosition({
+      lineNumber: issue.range.startLineNumber,
+      column: issue.range.startColumn,
+    });
+    if (word?.word) {
+      const sanitized = sanitizeImportCandidate(word.word);
       if (sanitized) {
         matches.push(sanitized);
       }
@@ -4383,11 +4427,22 @@ function inferImportCandidates(issue: NormalizedIssue): string[] {
 }
 
 function sanitizeImportCandidate(value: string): string | null {
-  const trimmed = value.trim().replace(/[.;:]+$/, '').replace(/^:+/, '');
+  const trimmed = value.trim();
   if (!trimmed) {
     return null;
   }
-  return trimmed;
+
+  const withoutPrefix = trimmed
+    .replace(/^(?:public|private)\s+import\s+/i, '')
+    .replace(/^(?:import\s+)?(?:required\s+for\s+)?/i, '')
+    .replace(/^element\s+/i, '');
+
+  const token = withoutPrefix.split(/\s+/)[0] ?? '';
+  const normalized = token.replace(/[.;:]+$/, '').replace(/^:+/, '');
+  if (!normalized) {
+    return null;
+  }
+  return normalized;
 }
 
 function computeImportInsertionRange(model: Monaco.editor.ITextModel): NormalizedRange | null {
@@ -4468,7 +4523,7 @@ function badgeFixes(issue: NormalizedIssue): string[] {
   if (issue.quickFixes.length) {
     return issue.quickFixes.map((fix) => fix.title);
   }
-  const inferred = inferImportCandidates(issue);
+  const inferred = inferImportCandidates(issue, editorRef.value?.getModel() ?? null);
   if (inferred.length) {
     return inferred.map((identifier) => `Insert public import ${identifier}`);
   }
