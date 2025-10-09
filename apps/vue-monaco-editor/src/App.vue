@@ -413,6 +413,48 @@
             </div>
           </div>
         </section>
+        <section class="plantuml-section">
+          <div class="plantuml-header">
+            <h2>PlantUML Preview</h2>
+            <button
+              type="button"
+              class="plantuml-refresh"
+              @click="refreshPlantUmlPreview"
+              :disabled="plantUmlLoading || !plantUmlCanRender"
+            >
+              {{ plantUmlLoading ? 'Rendering…' : 'Refresh' }}
+            </button>
+          </div>
+          <div class="plantuml-config">
+            <label>
+              Server endpoint
+              <input
+                v-model="plantUmlServerUrl"
+                type="url"
+                placeholder="https://www.plantuml.com/plantuml/svg"
+                spellcheck="false"
+              />
+            </label>
+          </div>
+          <div class="plantuml-body">
+            <p v-if="!selectedOutlineNode" class="plantuml-hint">
+              Select an outline element to generate a diagram.
+            </p>
+            <p v-else-if="!plantUmlCanRender" class="plantuml-hint">
+              Provide the PlantUML server endpoint to render diagrams.
+            </p>
+            <p v-else-if="plantUmlError" class="plantuml-error">{{ plantUmlError }}</p>
+            <p v-else-if="plantUmlLoading" class="plantuml-status">Rendering diagram…</p>
+            <div v-else-if="plantUmlImageUrl" class="plantuml-preview">
+              <img :src="plantUmlImageUrl" alt="PlantUML diagram preview" />
+            </div>
+            <p v-else class="plantuml-status">Diagram preview unavailable.</p>
+          </div>
+          <details v-if="plantUmlSource" class="plantuml-source">
+            <summary>PlantUML source</summary>
+            <pre>{{ plantUmlSource }}</pre>
+          </details>
+        </section>
         <section class="wizard-section">
           <div class="wizard-header">
             <h2>Modeling Wizards</h2>
@@ -894,6 +936,22 @@ const outlineRevision = ref(0);
 const renameDraft = ref('');
 const renameBusy = ref(false);
 const renameError = ref<string | null>(null);
+
+const plantUmlServerUrl = ref(
+  import.meta.env.VITE_PLANTUML_SERVER_URL ?? 'https://www.plantuml.com/plantuml/svg',
+);
+const plantUmlSource = ref('');
+const plantUmlImageUrl = ref<string | null>(null);
+const plantUmlError = ref<string | null>(null);
+const plantUmlLoading = ref(false);
+const normalizedPlantUmlServerUrl = computed(() => plantUmlServerUrl.value.trim());
+const plantUmlCanRender = computed(
+  () => !!selectedOutlineNode.value && !!normalizedPlantUmlServerUrl.value,
+);
+
+let plantUmlAbortController: AbortController | null = null;
+let plantUmlObjectUrl: string | null = null;
+let plantUmlRequestId = 0;
 
 const selectedOutlineNode = computed(() =>
   outlineSelectedKey.value ? outlineNodeIndex.get(outlineSelectedKey.value) ?? null : null,
@@ -1729,6 +1787,8 @@ onBeforeUnmount(() => {
     clearTimeout(outlineConfigTimer);
     outlineConfigTimer = null;
   }
+  cancelPlantUmlRequest();
+  clearPlantUmlDiagram();
   if (outlineAbortController) {
     outlineAbortController.abort();
     outlineAbortController = null;
@@ -2933,6 +2993,245 @@ watch(
   },
   { immediate: true },
 );
+
+watch(
+  [selectedOutlineNode, outlineRevision],
+  ([node]) => {
+    if (!node) {
+      cancelPlantUmlRequest();
+      plantUmlLoading.value = false;
+      plantUmlSource.value = '';
+      plantUmlError.value = null;
+      clearPlantUmlDiagram();
+      return;
+    }
+    refreshPlantUmlPreview();
+  },
+  { immediate: true },
+);
+
+watch(normalizedPlantUmlServerUrl, () => {
+  cancelPlantUmlRequest();
+  clearPlantUmlDiagram();
+  plantUmlError.value = null;
+  plantUmlLoading.value = false;
+});
+
+function cancelPlantUmlRequest(): void {
+  if (plantUmlAbortController) {
+    plantUmlAbortController.abort();
+    plantUmlAbortController = null;
+  }
+}
+
+function clearPlantUmlDiagram(): void {
+  if (plantUmlObjectUrl) {
+    URL.revokeObjectURL(plantUmlObjectUrl);
+    plantUmlObjectUrl = null;
+  }
+  plantUmlImageUrl.value = null;
+}
+
+async function refreshPlantUmlPreview(): Promise<void> {
+  const node = selectedOutlineNode.value;
+  const serverUrl = normalizedPlantUmlServerUrl.value;
+  const requestId = ++plantUmlRequestId;
+  cancelPlantUmlRequest();
+
+  if (!node) {
+    plantUmlLoading.value = false;
+    plantUmlSource.value = '';
+    plantUmlError.value = null;
+    clearPlantUmlDiagram();
+    return;
+  }
+
+  const source = buildPlantUmlSource(node);
+  plantUmlSource.value = source;
+
+  if (!serverUrl) {
+    plantUmlLoading.value = false;
+    plantUmlError.value = 'Provide the PlantUML server endpoint before rendering.';
+    clearPlantUmlDiagram();
+    return;
+  }
+
+  plantUmlLoading.value = true;
+  plantUmlError.value = null;
+
+  try {
+    await renderPlantUmlDiagram(serverUrl, source, requestId);
+  } catch (error) {
+    if (requestId === plantUmlRequestId) {
+      plantUmlError.value = toErrorMessage(error);
+      clearPlantUmlDiagram();
+    }
+  } finally {
+    if (requestId === plantUmlRequestId) {
+      plantUmlLoading.value = false;
+    }
+  }
+}
+
+async function renderPlantUmlDiagram(
+  serverUrl: string,
+  source: string,
+  requestId: number,
+): Promise<void> {
+  const controller = new AbortController();
+  plantUmlAbortController = controller;
+
+  try {
+    const response = await fetch(serverUrl, {
+      method: 'POST',
+      headers: {
+        Accept: 'image/svg+xml, image/png;q=0.8, */*;q=0.5',
+        'Content-Type': 'text/plain; charset=UTF-8',
+      },
+      body: source,
+      signal: controller.signal,
+    });
+
+    if (controller.signal.aborted || requestId !== plantUmlRequestId) {
+      return;
+    }
+
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '');
+      throw new Error(detail || `PlantUML server responded with status ${response.status}`);
+    }
+
+    const contentType = response.headers.get('Content-Type') ?? '';
+    if (contentType.includes('svg') || contentType.includes('png')) {
+      const blob = await response.blob();
+      if (controller.signal.aborted || requestId !== plantUmlRequestId) {
+        return;
+      }
+      const objectUrl = URL.createObjectURL(blob);
+      clearPlantUmlDiagram();
+      plantUmlObjectUrl = objectUrl;
+      plantUmlImageUrl.value = objectUrl;
+      return;
+    }
+
+    const message = await response.text().catch(() => '');
+    throw new Error(message || 'PlantUML server returned unexpected content.');
+  } catch (error) {
+    if (controller.signal.aborted || requestId !== plantUmlRequestId) {
+      return;
+    }
+    throw error;
+  } finally {
+    if (plantUmlAbortController === controller) {
+      plantUmlAbortController = null;
+    }
+  }
+}
+
+function buildPlantUmlSource(root: OutlineNode): string {
+  const MAX_DEPTH = 2;
+  const MAX_NODES = 24;
+  const queue: Array<{ node: OutlineNode; depth: number; parent: OutlineNode | null }> = [
+    { node: root, depth: 0, parent: null },
+  ];
+  const nodes: OutlineNode[] = [];
+  const aliasMap = new Map<string, string>();
+  const edges: Array<{ from: string; to: string; label?: string }> = [];
+
+  while (queue.length && nodes.length < MAX_NODES) {
+    const current = queue.shift();
+    if (!current) {
+      break;
+    }
+    const { node, depth, parent } = current;
+    nodes.push(node);
+    const alias = `N${aliasMap.size}`;
+    aliasMap.set(node.key, alias);
+    if (parent) {
+      edges.push({ from: parent.key, to: node.key, label: formatOutlineType(node.type) });
+    }
+    if (depth < MAX_DEPTH) {
+      for (const child of node.children) {
+        queue.push({ node: child, depth: depth + 1, parent: node });
+      }
+    }
+  }
+
+  const omittedCount = queue.length;
+  const lines: string[] = [];
+  lines.push('@startuml');
+  lines.push('skinparam shadowing false');
+  lines.push('skinparam classAttributeIconSize 0');
+  lines.push('hide empty members');
+
+  const rootLabel = root.label.trim() ? root.label : root.id;
+  const rootType = formatOutlineType(root.type);
+  const titleParts = [rootLabel];
+  if (rootType) {
+    titleParts.push(`«${rootType}»`);
+  }
+  lines.push(`title ${escapePlantUmlLabel(titleParts.join(' '))}`);
+
+  for (const node of nodes) {
+    const alias = aliasMap.get(node.key);
+    if (!alias) {
+      continue;
+    }
+    const label = (node.label.trim() ? node.label : node.id) ?? node.id;
+    const stereotype = formatOutlineType(node.type);
+    const typeSuffix = stereotype ? ` <<${escapePlantUmlStereotype(stereotype)}>>` : '';
+    lines.push(`class "${escapePlantUmlLabel(label)}" as ${alias}${typeSuffix}`);
+
+    const record = outlineElementCache.get(node.id);
+    const documentation = record?.documentation?.trim();
+    if (documentation) {
+      const docLines = documentation.split(/\r?\n/);
+      const limited = docLines.slice(0, 8).map((entry) => escapePlantUmlNoteLine(entry));
+      lines.push(`note right of ${alias}`);
+      for (const entry of limited) {
+        lines.push(`  ${entry}`);
+      }
+      if (docLines.length > limited.length) {
+        lines.push('  …');
+      }
+      lines.push('end note');
+    }
+  }
+
+  for (const edge of edges) {
+    const fromAlias = aliasMap.get(edge.from);
+    const toAlias = aliasMap.get(edge.to);
+    if (!fromAlias || !toAlias) {
+      continue;
+    }
+    const label = edge.label ? escapePlantUmlRelationLabel(edge.label) : 'owns';
+    lines.push(`${fromAlias} *-- ${toAlias} : ${label}`);
+  }
+
+  if (omittedCount > 0) {
+    lines.push(`' ${omittedCount} owned element(s) omitted from preview.`);
+  }
+
+  lines.push('@enduml');
+  return lines.join('\n');
+}
+
+function escapePlantUmlLabel(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\r?\n/g, '\\n');
+}
+
+function escapePlantUmlStereotype(value: string): string {
+  return value.replace(/[<>«»]/g, '').trim();
+}
+
+function escapePlantUmlNoteLine(value: string): string {
+  const sanitized = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return sanitized.length ? sanitized : ' ';
+}
+
+function escapePlantUmlRelationLabel(value: string): string {
+  return value.replace(/:/g, '\\:').replace(/"/g, '\\"');
+}
 
 function formatOutlineType(type?: string): string {
   if (!type) {
