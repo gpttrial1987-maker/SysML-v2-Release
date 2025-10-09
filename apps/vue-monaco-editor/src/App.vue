@@ -1892,7 +1892,10 @@ function applyMarkers(issues: NormalizedIssue[]) {
     startColumn: issue.range.startColumn,
     endLineNumber: issue.range.endLineNumber,
     endColumn: issue.range.endColumn,
-    tags: issue.quickFixes.length ? [monacoApi!.MarkerTag.Unnecessary] : undefined,
+    tags:
+      issue.quickFixes.length || inferImportCandidates(issue).length
+        ? [monacoApi!.MarkerTag.Unnecessary]
+        : undefined,
     relatedInformation: issue.elementId
       ? [
           {
@@ -2014,14 +2017,19 @@ function registerLanguageProviders(monaco: MonacoApi) {
 
           const fixes = issue.quickFixes.length
             ? issue.quickFixes
-            : [
-                {
-                  title: 'Review issue in validation service',
-                },
-              ];
+            : deriveHeuristicFixes(issue, model);
 
-          for (let idx = 0; idx < fixes.length; idx += 1) {
-            const fix = fixes[idx];
+          const fallbackFixes =
+            fixes.length > 0
+              ? fixes
+              : [
+                  {
+                    title: 'Review issue in validation service',
+                  },
+                ];
+
+          for (let idx = 0; idx < fallbackFixes.length; idx += 1) {
+            const fix = fallbackFixes[idx];
             const editRange = toMonacoRange(fix.range ?? issue.range, monaco);
             const edit =
               typeof fix.replacementText === 'string'
@@ -2306,6 +2314,139 @@ function normalizeFixes(raw: unknown): NormalizedFix[] {
   return fixes;
 }
 
+function deriveHeuristicFixes(
+  issue: NormalizedIssue,
+  model: Monaco.editor.ITextModel,
+): NormalizedFix[] {
+  const candidates = inferImportCandidates(issue);
+  if (!candidates.length) {
+    return [];
+  }
+
+  const insertionPoint = computeImportInsertionRange(model);
+  if (!insertionPoint) {
+    return [];
+  }
+
+  const eol = model.getEOL();
+  const fixes: NormalizedFix[] = [];
+
+  for (const identifier of candidates) {
+    if (modelHasImport(model, identifier)) {
+      continue;
+    }
+
+    fixes.push({
+      title: `Insert public import ${identifier}`,
+      replacementText: `public import ${identifier};${eol}`,
+      range: { ...insertionPoint },
+    });
+
+    fixes.push({
+      title: `Insert private import ${identifier}`,
+      replacementText: `private import ${identifier};${eol}`,
+      range: { ...insertionPoint },
+    });
+  }
+
+  return fixes;
+}
+
+function inferImportCandidates(issue: NormalizedIssue): string[] {
+  const message = issue.message;
+  const matches: string[] = [];
+
+  const patterns = [
+    /missing\s+(?:public\s+)?import(?:\s+(?:for|of))?\s+(?:element\s+)?['"]?([\w.:]+)['"]?/i,
+    /unresolved\s+(?:reference|ref(?:erence)?|identifier|element)\s+(?:to|for|of)?\s*(?:element\s+)?['"]?([\w.:]+)['"]?/i,
+    /cannot\s+resolve\s+(?:reference|ref(?:erence)?|identifier|element)\s+(?:to|for|of)?\s*(?:element\s+)?['"]?([\w.:]+)['"]?/i,
+    /no\s+import\s+(?:for|of)\s+(?:element\s+)?['"]?([\w.:]+)['"]?/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = pattern.exec(message);
+    if (match && match[1]) {
+      const sanitized = sanitizeImportCandidate(match[1]);
+      if (sanitized) {
+        matches.push(sanitized);
+      }
+    }
+  }
+
+  return Array.from(new Set(matches));
+}
+
+function sanitizeImportCandidate(value: string): string | null {
+  const trimmed = value.trim().replace(/[.;:]+$/, '').replace(/^:+/, '');
+  if (!trimmed) {
+    return null;
+  }
+  return trimmed;
+}
+
+function computeImportInsertionRange(model: Monaco.editor.ITextModel): NormalizedRange | null {
+  const lineCount = model.getLineCount();
+  if (lineCount === 0) {
+    return {
+      startLineNumber: 1,
+      startColumn: 1,
+      endLineNumber: 1,
+      endColumn: 1,
+    };
+  }
+
+  let insertBefore = 1;
+
+  for (let line = 1; line <= lineCount; line += 1) {
+    const content = model.getLineContent(line);
+    const trimmed = content.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+    if (trimmed.startsWith('--')) {
+      insertBefore = line + 1;
+      continue;
+    }
+    if (/^(?:public|private)?\s*import\b/i.test(trimmed)) {
+      insertBefore = line + 1;
+      continue;
+    }
+    if (/^package\b/i.test(trimmed)) {
+      insertBefore = line + 1;
+      continue;
+    }
+    break;
+  }
+
+  if (insertBefore > lineCount) {
+    const lastLine = lineCount;
+    const column = model.getLineLength(lastLine) + 1;
+    return {
+      startLineNumber: lastLine,
+      startColumn: column,
+      endLineNumber: lastLine,
+      endColumn: column,
+    };
+  }
+
+  return {
+    startLineNumber: insertBefore,
+    startColumn: 1,
+    endLineNumber: insertBefore,
+    endColumn: 1,
+  };
+}
+
+function modelHasImport(model: Monaco.editor.ITextModel, identifier: string): boolean {
+  const escaped = escapeRegExp(identifier);
+  const regex = new RegExp(`\\b(?:public|private)?\\s*import\\s+${escaped}\\b`);
+  return regex.test(model.getValue());
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function toMarkerSeverity(monaco: MonacoApi, severity: IssueSeverity) {
   switch (severity) {
     case 'warning':
@@ -2318,10 +2459,14 @@ function toMarkerSeverity(monaco: MonacoApi, severity: IssueSeverity) {
 }
 
 function badgeFixes(issue: NormalizedIssue): string[] {
-  if (issue.quickFixes.length === 0) {
-    return ['Quick fix available on hover'];
+  if (issue.quickFixes.length) {
+    return issue.quickFixes.map((fix) => fix.title);
   }
-  return issue.quickFixes.map((fix) => fix.title);
+  const inferred = inferImportCandidates(issue);
+  if (inferred.length) {
+    return inferred.map((identifier) => `Insert public import ${identifier}`);
+  }
+  return ['Quick fix available on hover'];
 }
 
 function severityLabel(severity: IssueSeverity) {
