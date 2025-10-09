@@ -2,6 +2,8 @@ import { expect, test } from '@playwright/test';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
+import { buildBlockConnectorGraph, layoutBlockConnectorGraph } from '../../../src/graph';
+
 interface RuntimeProjectConfig {
   projectId: string;
   branchId: string;
@@ -72,19 +74,16 @@ test('authoring and modeling workflow', async ({ page }) => {
 
   await expect(page.getByRole('treeitem', { name: /WheelController/i })).toBeVisible();
 
-  const diagramInfo = await page.evaluate(async ({ apiBaseUrl: baseUrl, projectId, commitId }) => {
-    const { buildBlockConnectorGraph, layoutBlockConnectorGraph } = await import('/src/graph/index.ts');
-    const response = await fetch(
-      `${baseUrl}/projects/${encodeURIComponent(projectId)}/commits/${encodeURIComponent(commitId)}/elements?classifierId=sysml:BlockDefinition&limit=100`,
-    );
-    if (!response.ok) {
-      throw new Error(`Failed to load elements for diagram (${response.status})`);
-    }
-    const payload = await response.json();
-    const items = Array.isArray(payload.items) ? payload.items : [];
-    const graph = buildBlockConnectorGraph(items);
-    const layout = await layoutBlockConnectorGraph(graph, { direction: 'RIGHT' });
+  const response = await page.request.get(
+    `${apiBaseUrl}/projects/${encodeURIComponent(project.projectId)}/commits/${encodeURIComponent(project.commitId)}/elements?classifierId=sysml:BlockDefinition&limit=100`,
+  );
+  expect(response.ok()).toBeTruthy();
+  const payload = await response.json();
+  const items = Array.isArray(payload.items) ? payload.items : [];
+  const graph = buildBlockConnectorGraph(items);
+  const layout = await layoutBlockConnectorGraph(graph, { direction: 'RIGHT' });
 
+  const diagramInfo = await page.evaluate(({ nodes, layoutNodes, edgeCount }) => {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('id', 'playwright-block-diagram');
     svg.setAttribute('viewBox', '0 0 800 600');
@@ -92,8 +91,8 @@ test('authoring and modeling workflow', async ({ page }) => {
     svg.style.height = '360px';
     svg.style.border = '1px solid currentColor';
 
-    for (const node of graph.nodes) {
-      const layoutNode = layout.nodes[node.id];
+    for (const node of nodes) {
+      const layoutNode = layoutNodes[node.id];
       if (!layoutNode) continue;
       const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
       group.setAttribute('transform', `translate(${layoutNode.x}, ${layoutNode.y})`);
@@ -107,7 +106,7 @@ test('authoring and modeling workflow', async ({ page }) => {
       group.appendChild(rect);
 
       const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-      label.textContent = node.label || node.elementId;
+      label.textContent = node.label;
       label.setAttribute('x', '12');
       label.setAttribute('y', '28');
       label.setAttribute('fill', '#f9fafb');
@@ -119,11 +118,14 @@ test('authoring and modeling workflow', async ({ page }) => {
     }
 
     document.body.appendChild(svg);
-    return { nodeCount: graph.nodes.length, edgeCount: graph.edges.length };
+    return { nodeCount: nodes.length, edgeCount };
   }, {
-    apiBaseUrl,
-    projectId: project.projectId,
-    commitId: project.commitId,
+    nodes: graph.nodes.map((node) => ({
+      id: node.id,
+      label: node.label ?? node.elementId,
+    })),
+    layoutNodes: layout.nodes,
+    edgeCount: graph.edges.length,
   });
 
   await expect(page.locator('#playwright-block-diagram')).toBeVisible();
