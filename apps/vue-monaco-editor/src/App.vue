@@ -980,7 +980,7 @@ function buildRequirementSnippet(record: ApiElementRecord, input: {
     lines.push(`  reqId = ${JSON.stringify(input.identifier)};`);
   }
   if (input.text) {
-    lines.push(`  text = ${JSON.stringify(input.text)};`);
+    lines.push(`  text = ${JSON.stringify([input.text])};`);
   }
   lines.push('}');
   return lines.join('\n');
