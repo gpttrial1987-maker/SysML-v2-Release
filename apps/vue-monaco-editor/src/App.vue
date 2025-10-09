@@ -20,7 +20,22 @@
 
     <main class="main-content">
       <section class="editor-container">
-        <div ref="monacoRoot" class="monaco-container" />
+        <div ref="monacoRoot" class="monaco-container" v-show="editorView === 'editor'" />
+        <div ref="diffRoot" class="monaco-container diff-view" v-show="editorView === 'diff'" />
+        <div class="merge-container" v-show="editorView === 'merge'">
+          <div class="merge-pane">
+            <div class="merge-pane-label">Base commit</div>
+            <div ref="mergeLeftRoot" class="merge-editor" />
+          </div>
+          <div class="merge-pane">
+            <div class="merge-pane-label">Server (resolved)</div>
+            <div ref="mergeCenterRoot" class="merge-editor" />
+          </div>
+          <div class="merge-pane">
+            <div class="merge-pane-label">Target commit</div>
+            <div ref="mergeRightRoot" class="merge-editor" />
+          </div>
+        </div>
       </section>
       <aside class="sidebar">
         <section>
@@ -119,6 +134,89 @@
             <p v-else class="outline-status">No owned elements were returned.</p>
           </div>
         </section>
+        <section class="diff-section">
+          <div class="diff-header">
+            <h2>Diff &amp; Merge</h2>
+            <button type="button" class="diff-clear" @click="clearDiff" :disabled="!diffActive">
+              Clear
+            </button>
+          </div>
+          <div class="diff-config">
+            <label>
+              Project ID
+              <input
+                v-model="diffProjectId"
+                type="text"
+                placeholder="project-id"
+                spellcheck="false"
+              />
+            </label>
+            <label>
+              Base commit ID
+              <input
+                v-model="diffBaseCommitId"
+                type="text"
+                placeholder="base commit"
+                spellcheck="false"
+              />
+            </label>
+            <label>
+              Target commit ID
+              <input
+                v-model="diffTargetCommitId"
+                type="text"
+                placeholder="target commit"
+                spellcheck="false"
+              />
+            </label>
+            <label>
+              .sysml path
+              <input
+                v-model="diffFilePath"
+                type="text"
+                placeholder="path/to/model.sysml"
+                spellcheck="false"
+              />
+            </label>
+          </div>
+          <div class="diff-actions">
+            <button
+              type="button"
+              class="diff-primary"
+              @click="loadSysmlDiff"
+              :disabled="!diffReadyToLoad || diffLoading"
+            >
+              {{ diffLoading ? 'Loading…' : diffActive ? 'Reload diff' : 'Show diff' }}
+            </button>
+            <button type="button" class="diff-secondary" @click="reconcileActiveMerge" :disabled="!canReconcile">
+              Reconcile IDs
+            </button>
+          </div>
+          <p v-if="!diffReadyToLoad" class="diff-hint">
+            Provide the project, base commit, target commit, and .sysml path to compare revisions.
+          </p>
+          <p v-else-if="diffError" class="diff-error">{{ diffError }}</p>
+          <p v-else-if="diffActive && editorView === 'diff'" class="diff-status">
+            No conflicting changes detected between the selected commits.
+          </p>
+          <p v-else-if="diffActive && editorView === 'merge' && !mergeConflicts.length" class="diff-status">
+            All changes merged using server IDs.
+          </p>
+          <div v-if="mergeConflicts.length" class="diff-conflicts">
+            <h3>Conflicts (server version shown in the middle editor)</h3>
+            <ul>
+              <li v-for="(conflict, index) in mergeConflicts" :key="index">
+                <strong>{{ conflict.baseRangeLabel }}</strong>
+                <p>
+                  Base commit {{ conflict.leftRangeLabel }} · {{ conflict.leftPreview }}
+                </p>
+                <p>
+                  Server {{ conflict.rightRangeLabel }} · {{ conflict.rightPreview }}
+                </p>
+              </li>
+            </ul>
+          </div>
+        </section>
         <section>
           <h2>Diagnostics</h2>
           <ul v-if="diagnostics.length" class="validation-list">
@@ -148,6 +246,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch 
 import loader from '@monaco-editor/loader';
 
 import type * as Monaco from 'monaco-editor';
+
+import { mergeChanges, formatLineRange, type MergeConflict } from './diff-utils';
 
 type MonacoApi = typeof import('monaco-editor');
 
@@ -209,6 +309,14 @@ interface OutlinePosition {
   column: number;
 }
 
+interface MergeConflictSummary {
+  baseRangeLabel: string;
+  leftRangeLabel: string;
+  rightRangeLabel: string;
+  leftPreview: string;
+  rightPreview: string;
+}
+
 const defaultModel = `package Example::DriveUnit {
   part controller : Controller { id = ctrl_controller; }
   part motor : Motor { id = motor_primary; }
@@ -248,6 +356,15 @@ const outlineError = ref<string | null>(null);
 const outlineRoot = ref<OutlineNode | null>(null);
 const outlineSelectedKey = ref<string | null>(null);
 
+const editorView = ref<'editor' | 'diff' | 'merge'>('editor');
+const diffProjectId = ref(outlineProjectId.value);
+const diffBaseCommitId = ref(outlineCommitId.value);
+const diffTargetCommitId = ref('');
+const diffFilePath = ref('');
+const diffLoading = ref(false);
+const diffError = ref<string | null>(null);
+const mergeConflicts = ref<MergeConflictSummary[]>([]);
+
 const outlineReadyToLoad = computed(
   () =>
     sysmlApiBaseUrl.value.trim().length > 0 &&
@@ -272,8 +389,33 @@ const outlineItems = computed<OutlineListItem[]>(() => {
   return items;
 });
 
+const diffActive = computed(() => editorView.value !== 'editor');
+const diffReadyToLoad = computed(
+  () =>
+    sysmlApiBaseUrl.value.trim().length > 0 &&
+    diffProjectId.value.trim().length > 0 &&
+    diffBaseCommitId.value.trim().length > 0 &&
+    diffTargetCommitId.value.trim().length > 0 &&
+    diffFilePath.value.trim().length > 0,
+);
+const canReconcile = computed(() => editorView.value === 'merge' && !diffLoading.value);
+
 const monacoRoot = ref<HTMLDivElement | null>(null);
+const diffRoot = ref<HTMLDivElement | null>(null);
+const mergeLeftRoot = ref<HTMLDivElement | null>(null);
+const mergeCenterRoot = ref<HTMLDivElement | null>(null);
+const mergeRightRoot = ref<HTMLDivElement | null>(null);
 const editorRef = shallowRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
+const diffEditorRef = shallowRef<Monaco.editor.IStandaloneDiffEditor | null>(null);
+const mergeLeftEditorRef = shallowRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
+const mergeCenterEditorRef = shallowRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
+const mergeRightEditorRef = shallowRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
+
+let diffOriginalModel: Monaco.editor.ITextModel | null = null;
+let diffModifiedModel: Monaco.editor.ITextModel | null = null;
+let mergeBaseModel: Monaco.editor.ITextModel | null = null;
+let mergeResolvedModel: Monaco.editor.ITextModel | null = null;
+let mergeTargetModel: Monaco.editor.ITextModel | null = null;
 
 const isValidating = computed(() => status.value === 'running');
 const lastValidated = computed(() =>
@@ -290,11 +432,14 @@ let outlineDecorations: string[] = [];
 let outlineAbortController: AbortController | null = null;
 let outlineConfigTimer: ReturnType<typeof setTimeout> | null = null;
 let ignoreEditorSelection = false;
+let cleanupResize: (() => void) | null = null;
 const outlineNodeIndex = new Map<string, OutlineNode>();
 const outlineNodesWithRange: OutlineNode[] = [];
 const outlineNodesByElementId = new Map<string, OutlineNode[]>();
 const outlineElementCache = new Map<string, ApiElementRecord>();
 const outlineOwnedCache = new Map<string, ApiElementRecord[]>();
+let diffAbortController: AbortController | null = null;
+const diffElementCache = new Map<string, ApiElementRecord>();
 
 onMounted(async () => {
   loader.config({
@@ -325,6 +470,46 @@ onMounted(async () => {
     smoothScrolling: true,
   });
   editorRef.value = editor;
+
+  if (diffRoot.value) {
+    diffEditorRef.value = monaco.editor.createDiffEditor(diffRoot.value, {
+      automaticLayout: true,
+      readOnly: true,
+      renderSideBySide: true,
+      originalEditable: false,
+      theme: 'vs-dark',
+      enableSplitViewResizing: true,
+      ignoreTrimWhitespace: false,
+    });
+  }
+
+  if (mergeLeftRoot.value && mergeCenterRoot.value && mergeRightRoot.value) {
+    mergeLeftEditorRef.value = monaco.editor.create(mergeLeftRoot.value, {
+      automaticLayout: true,
+      language: 'sysml',
+      theme: 'vs-dark',
+      readOnly: true,
+      minimap: { enabled: false },
+    });
+    mergeCenterEditorRef.value = monaco.editor.create(mergeCenterRoot.value, {
+      automaticLayout: true,
+      language: 'sysml',
+      theme: 'vs-dark',
+      readOnly: false,
+      minimap: { enabled: false },
+    });
+    mergeRightEditorRef.value = monaco.editor.create(mergeRightRoot.value, {
+      automaticLayout: true,
+      language: 'sysml',
+      theme: 'vs-dark',
+      readOnly: true,
+      minimap: { enabled: false },
+    });
+  }
+
+  const handleResize = () => layoutActiveEditor();
+  window.addEventListener('resize', handleResize);
+  cleanupResize = () => window.removeEventListener('resize', handleResize);
 
   const model = editor.getModel();
   if (!model) {
@@ -387,6 +572,14 @@ watch(
   { immediate: true },
 );
 
+watch([diffProjectId, diffBaseCommitId, diffTargetCommitId, diffFilePath], () => {
+  diffError.value = null;
+});
+
+watch(editorView, () => {
+  layoutActiveEditor();
+});
+
 onBeforeUnmount(() => {
   if (validationTimer) {
     clearTimeout(validationTimer);
@@ -403,6 +596,28 @@ onBeforeUnmount(() => {
     disposable.dispose();
   }
   modelDisposables = [];
+  if (cleanupResize) {
+    cleanupResize();
+    cleanupResize = null;
+  }
+  disposeDiffModels();
+  disposeMergeModels();
+  if (diffEditorRef.value) {
+    diffEditorRef.value.dispose();
+    diffEditorRef.value = null;
+  }
+  if (mergeLeftEditorRef.value) {
+    mergeLeftEditorRef.value.dispose();
+    mergeLeftEditorRef.value = null;
+  }
+  if (mergeCenterEditorRef.value) {
+    mergeCenterEditorRef.value.dispose();
+    mergeCenterEditorRef.value = null;
+  }
+  if (mergeRightEditorRef.value) {
+    mergeRightEditorRef.value.dispose();
+    mergeRightEditorRef.value = null;
+  }
   const editor = editorRef.value;
   if (editor) {
     const model = editor.getModel();
@@ -555,7 +770,7 @@ async function fetchElementRecord(
   if (cached) {
     return cached;
   }
-  const url = buildElementUrl(config, elementId);
+  const url = buildCommitElementUrl(config.baseUrl, config.projectId, config.commitId, elementId);
   const payload = await requestJson(url, signal);
   const record = parseElementRecord(payload);
   outlineElementCache.set(record.id, record);
@@ -571,7 +786,7 @@ async function fetchOwnedElementRecords(
   if (cached) {
     return cached;
   }
-  const url = buildElementUrl(config, elementId, 'owned-elements');
+  const url = buildCommitElementUrl(config.baseUrl, config.projectId, config.commitId, elementId, 'owned-elements');
   const payload = await requestJson(url, signal);
   const records = parseOwnedElements(payload);
   outlineOwnedCache.set(elementId, records);
@@ -583,10 +798,14 @@ async function fetchOwnedElementRecords(
   return records;
 }
 
-function buildElementUrl(config: OutlineConfig, elementId?: string, suffix?: string) {
-  let url = `${config.baseUrl}/projects/${encodeURIComponent(config.projectId)}/commits/${encodeURIComponent(
-    config.commitId,
-  )}/elements`;
+function buildCommitElementUrl(
+  baseUrl: string,
+  projectId: string,
+  commitId: string,
+  elementId?: string,
+  suffix?: string,
+) {
+  let url = `${baseUrl}/projects/${encodeURIComponent(projectId)}/commits/${encodeURIComponent(commitId)}/elements`;
   if (elementId) {
     url += `/${encodeURIComponent(elementId)}`;
   }
@@ -886,6 +1105,484 @@ function outlineNodeTooltip(node: OutlineNode): string {
     );
   }
   return parts.join(' · ');
+}
+
+async function loadSysmlDiff(): Promise<void> {
+  if (!diffReadyToLoad.value) {
+    diffError.value = 'Provide the project, commit IDs, and file path before loading a diff.';
+    return;
+  }
+  if (!monacoApi) {
+    diffError.value = 'Editor environment is still loading. Try again in a moment.';
+    return;
+  }
+
+  if (diffAbortController) {
+    diffAbortController.abort();
+    diffAbortController = null;
+  }
+
+  const baseUrl = sysmlApiBaseUrl.value.trim().replace(/\/+$/, '');
+  const projectId = diffProjectId.value.trim();
+  const baseCommit = diffBaseCommitId.value.trim();
+  const targetCommit = diffTargetCommitId.value.trim();
+  const filePath = diffFilePath.value.trim();
+
+  const controller = new AbortController();
+  diffAbortController = controller;
+  diffLoading.value = true;
+  diffError.value = null;
+  mergeConflicts.value = [];
+
+  try {
+    const [baseRaw, targetRaw] = await Promise.all([
+      fetchSysmlFile(baseUrl, projectId, baseCommit, filePath, controller.signal),
+      fetchSysmlFile(baseUrl, projectId, targetCommit, filePath, controller.signal),
+    ]);
+
+    if (controller.signal.aborted) {
+      return;
+    }
+
+    const [baseText, targetText] = await Promise.all([
+      reconcileModelIds(baseRaw, projectId, baseCommit, baseUrl, controller.signal),
+      reconcileModelIds(targetRaw, projectId, targetCommit, baseUrl, controller.signal),
+    ]);
+
+    if (controller.signal.aborted) {
+      return;
+    }
+
+    let view: 'diff' | 'merge' = 'diff';
+    let mergedText = targetText;
+    let conflictSummaries: MergeConflictSummary[] = [];
+
+    const ancestorCommit = await findCommonAncestor(baseUrl, projectId, baseCommit, targetCommit, controller.signal);
+    if (controller.signal.aborted) {
+      return;
+    }
+
+    if (ancestorCommit) {
+      const ancestorRaw = await fetchSysmlFile(baseUrl, projectId, ancestorCommit, filePath, controller.signal);
+      const ancestorText = await reconcileModelIds(
+        ancestorRaw,
+        projectId,
+        ancestorCommit,
+        baseUrl,
+        controller.signal,
+      );
+
+      if (controller.signal.aborted) {
+        return;
+      }
+
+      const mergeResult = mergeChanges(ancestorText, baseText, targetText);
+      mergedText = mergeResult.mergedText;
+
+      if (mergeResult.conflicts.length) {
+        conflictSummaries = summarizeConflicts(ancestorText, mergeResult.conflicts);
+        setMergeModels(baseText, mergedText, targetText);
+        disposeDiffModels();
+        view = 'merge';
+      } else {
+        setDiffModels(baseText, targetText);
+        disposeMergeModels();
+        view = 'diff';
+      }
+    } else {
+      setDiffModels(baseText, targetText);
+      disposeMergeModels();
+      view = 'diff';
+    }
+
+    mergeConflicts.value = conflictSummaries;
+    editorView.value = view;
+    await nextTick();
+    layoutActiveEditor();
+  } catch (error) {
+    if (!(error instanceof DOMException && error.name === 'AbortError')) {
+      diffError.value = error instanceof Error ? error.message : 'Failed to compute diff.';
+      disposeDiffModels();
+      disposeMergeModels();
+      mergeConflicts.value = [];
+      editorView.value = 'editor';
+      await nextTick();
+      layoutActiveEditor();
+    }
+  } finally {
+    if (diffAbortController === controller) {
+      diffAbortController = null;
+    }
+    diffLoading.value = false;
+  }
+}
+
+function clearDiff(): void {
+  if (diffAbortController) {
+    diffAbortController.abort();
+    diffAbortController = null;
+  }
+  diffLoading.value = false;
+  diffError.value = null;
+  mergeConflicts.value = [];
+  disposeDiffModels();
+  disposeMergeModels();
+  editorView.value = 'editor';
+  layoutActiveEditor();
+}
+
+async function reconcileActiveMerge(): Promise<void> {
+  if (editorView.value !== 'merge' || !mergeCenterEditorRef.value) {
+    return;
+  }
+  const baseUrl = sysmlApiBaseUrl.value.trim().replace(/\/+$/, '');
+  const projectId = diffProjectId.value.trim();
+  const commitId = diffTargetCommitId.value.trim();
+  if (!baseUrl || !projectId || !commitId) {
+    return;
+  }
+  const content = mergeCenterEditorRef.value.getValue();
+  diffLoading.value = true;
+  try {
+    const controller = new AbortController();
+    const reconciled = await reconcileModelIds(content, projectId, commitId, baseUrl, controller.signal);
+    mergeCenterEditorRef.value.setValue(reconciled);
+    diffError.value = null;
+  } catch (error) {
+    if (!(error instanceof DOMException && error.name === 'AbortError')) {
+      diffError.value = error instanceof Error ? error.message : 'Failed to reconcile model IDs.';
+    }
+  } finally {
+    diffLoading.value = false;
+    layoutActiveEditor();
+  }
+}
+
+function setDiffModels(original: string, modified: string): void {
+  if (!monacoApi || !diffEditorRef.value) {
+    return;
+  }
+  if (diffOriginalModel) {
+    diffOriginalModel.dispose();
+  }
+  if (diffModifiedModel) {
+    diffModifiedModel.dispose();
+  }
+  diffOriginalModel = monacoApi.editor.createModel(original, 'sysml');
+  diffModifiedModel = monacoApi.editor.createModel(modified, 'sysml');
+  diffEditorRef.value.setModel({ original: diffOriginalModel, modified: diffModifiedModel });
+}
+
+function disposeDiffModels(): void {
+  if (diffEditorRef.value) {
+    diffEditorRef.value.setModel(null);
+  }
+  if (diffOriginalModel) {
+    diffOriginalModel.dispose();
+    diffOriginalModel = null;
+  }
+  if (diffModifiedModel) {
+    diffModifiedModel.dispose();
+    diffModifiedModel = null;
+  }
+}
+
+function setMergeModels(baseText: string, resolvedText: string, targetText: string): void {
+  if (!monacoApi || !mergeLeftEditorRef.value || !mergeCenterEditorRef.value || !mergeRightEditorRef.value) {
+    return;
+  }
+  if (mergeBaseModel) {
+    mergeBaseModel.dispose();
+  }
+  if (mergeResolvedModel) {
+    mergeResolvedModel.dispose();
+  }
+  if (mergeTargetModel) {
+    mergeTargetModel.dispose();
+  }
+
+  mergeBaseModel = monacoApi.editor.createModel(baseText, 'sysml');
+  mergeResolvedModel = monacoApi.editor.createModel(resolvedText, 'sysml');
+  mergeTargetModel = monacoApi.editor.createModel(targetText, 'sysml');
+
+  mergeLeftEditorRef.value.setModel(mergeBaseModel);
+  mergeCenterEditorRef.value.setModel(mergeResolvedModel);
+  mergeRightEditorRef.value.setModel(mergeTargetModel);
+}
+
+function disposeMergeModels(): void {
+  if (mergeLeftEditorRef.value) {
+    mergeLeftEditorRef.value.setModel(null);
+  }
+  if (mergeCenterEditorRef.value) {
+    mergeCenterEditorRef.value.setModel(null);
+  }
+  if (mergeRightEditorRef.value) {
+    mergeRightEditorRef.value.setModel(null);
+  }
+  if (mergeBaseModel) {
+    mergeBaseModel.dispose();
+    mergeBaseModel = null;
+  }
+  if (mergeResolvedModel) {
+    mergeResolvedModel.dispose();
+    mergeResolvedModel = null;
+  }
+  if (mergeTargetModel) {
+    mergeTargetModel.dispose();
+    mergeTargetModel = null;
+  }
+}
+
+function summarizeConflicts(ancestorText: string, conflicts: MergeConflict[]): MergeConflictSummary[] {
+  const baseLines = normalizeNewlines(ancestorText).split('\n');
+  return conflicts.map((conflict) => {
+    const combinedStart = Math.min(conflict.left.start, conflict.right.start);
+    const combinedEnd = Math.max(conflict.left.end, conflict.right.end);
+    return {
+      baseRangeLabel: formatLineRange(combinedStart, combinedEnd),
+      leftRangeLabel: formatLineRange(conflict.left.start, conflict.left.end),
+      rightRangeLabel: formatLineRange(conflict.right.start, conflict.right.end),
+      leftPreview: truncatePreview(previewOperation(conflict.left, baseLines)),
+      rightPreview: truncatePreview(previewOperation(conflict.right, baseLines)),
+    };
+  });
+}
+
+function previewOperation(operation: MergeConflict['left'], baseLines: string[]): string {
+  if (operation.replacement.length) {
+    return operation.replacement.join(' ⏎ ');
+  }
+  const removed = baseLines.slice(operation.start, operation.end);
+  return removed.length ? removed.join(' ⏎ ') : '(no content)';
+}
+
+function truncatePreview(value: string, maxLength = 160): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= maxLength) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, maxLength)}…`;
+}
+
+async function fetchSysmlFile(
+  baseUrl: string,
+  projectId: string,
+  commitId: string,
+  filePath: string,
+  signal: AbortSignal,
+): Promise<string> {
+  const sanitizedPath = filePath.replace(/^\/+/, '');
+  const segments = sanitizedPath
+    .split('/')
+    .filter((segment) => segment.length)
+    .map((segment) => encodeURIComponent(segment));
+  const encodedPath = segments.join('/');
+  const candidates = [
+    `${baseUrl}/projects/${encodeURIComponent(projectId)}/commits/${encodeURIComponent(commitId)}/files/${encodedPath}`,
+    `${baseUrl}/projects/${encodeURIComponent(projectId)}/commits/${encodeURIComponent(commitId)}/artifacts/${encodedPath}`,
+  ];
+
+  let lastError: Error | null = null;
+  for (const url of candidates) {
+    try {
+      const response = await fetch(url, { signal, headers: { Accept: 'text/plain' } });
+      if (response.ok) {
+        const text = await response.text();
+        return normalizeNewlines(text);
+      }
+      if (response.status !== 404) {
+        throw new Error(`Request failed with status ${response.status}`);
+      }
+      lastError = new Error(`File not found at ${url}`);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw error;
+      }
+      lastError = error instanceof Error ? error : new Error(String(error));
+    }
+  }
+  throw lastError ?? new Error('Unable to fetch SysML file.');
+}
+
+async function reconcileModelIds(
+  text: string,
+  projectId: string,
+  commitId: string,
+  baseUrl: string,
+  signal: AbortSignal,
+): Promise<string> {
+  const identifiers = extractModelIdentifiers(text);
+  if (!identifiers.length) {
+    return text;
+  }
+
+  const replacements = new Map<string, string>();
+  await Promise.all(
+    identifiers.map(async (identifier) => {
+      const cacheKey = `${commitId}::${identifier}`;
+      if (diffElementCache.has(cacheKey)) {
+        replacements.set(identifier, diffElementCache.get(cacheKey)!.id);
+        return;
+      }
+      try {
+        const url = buildCommitElementUrl(baseUrl, projectId, commitId, identifier);
+        const payload = await requestJson(url, signal);
+        const record = parseElementRecord(payload);
+        diffElementCache.set(cacheKey, record);
+        replacements.set(identifier, record.id);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          throw error;
+        }
+      }
+    }),
+  );
+
+  let reconciled = normalizeNewlines(text);
+  for (const [source, canonical] of replacements) {
+    if (source === canonical) {
+      continue;
+    }
+    const before = '(?<![A-Za-z0-9_.-])';
+    const after = '(?![A-Za-z0-9_.-])';
+    const pattern = new RegExp(`${before}${escapeRegExp(source)}${after}`, 'g');
+    reconciled = reconciled.replace(pattern, canonical);
+  }
+  return reconciled;
+}
+
+function extractModelIdentifiers(text: string): string[] {
+  const pattern = /\b(?:id|elementId)\s*[:=]\s*(["']?)([A-Za-z_][\w.\-]*)\1/g;
+  const identifiers = new Set<string>();
+  const lines = text.split(/\r?\n/);
+  for (const line of lines) {
+    let match: RegExpExecArray | null;
+    pattern.lastIndex = 0;
+    while ((match = pattern.exec(line)) !== null) {
+      identifiers.add(match[2]);
+    }
+  }
+  return Array.from(identifiers);
+}
+
+async function findCommonAncestor(
+  baseUrl: string,
+  projectId: string,
+  commitA: string,
+  commitB: string,
+  signal: AbortSignal,
+): Promise<string | null> {
+  if (commitA === commitB) {
+    return commitA;
+  }
+
+  const visitedA = new Set<string>([commitA]);
+  const visitedB = new Set<string>([commitB]);
+  const frontierA: string[] = [commitA];
+  const frontierB: string[] = [commitB];
+  const parentCache = new Map<string, string[]>();
+
+  const expand = async (
+    frontier: string[],
+    visited: Set<string>,
+    otherVisited: Set<string>,
+  ): Promise<string | null> => {
+    const next: string[] = [];
+    for (const id of frontier) {
+      if (signal.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
+      const parents = await fetchCommitParents(id);
+      for (const parent of parents) {
+        if (otherVisited.has(parent)) {
+          return parent;
+        }
+        if (!visited.has(parent)) {
+          visited.add(parent);
+          next.push(parent);
+        }
+      }
+    }
+    frontier.splice(0, frontier.length, ...next);
+    return null;
+  };
+
+  const fetchCommitParents = async (commitId: string): Promise<string[]> => {
+    if (parentCache.has(commitId)) {
+      return parentCache.get(commitId)!;
+    }
+    const summary = await fetchCommitSummary(baseUrl, projectId, commitId, signal);
+    parentCache.set(commitId, summary.parentIds);
+    return summary.parentIds;
+  };
+
+  let iterations = 0;
+  const maxIterations = 200;
+  while ((frontierA.length || frontierB.length) && iterations < maxIterations) {
+    iterations += 1;
+    if (frontierA.length) {
+      const candidate = await expand(frontierA, visitedA, visitedB);
+      if (candidate) {
+        return candidate;
+      }
+    }
+    if (frontierB.length) {
+      const candidate = await expand(frontierB, visitedB, visitedA);
+      if (candidate) {
+        return candidate;
+      }
+    }
+  }
+
+  return null;
+}
+
+async function fetchCommitSummary(
+  baseUrl: string,
+  projectId: string,
+  commitId: string,
+  signal: AbortSignal,
+): Promise<{ id: string; parentIds: string[] }> {
+  const url = `${baseUrl}/projects/${encodeURIComponent(projectId)}/commits/${encodeURIComponent(commitId)}`;
+  const payload = await requestJson(url, signal);
+  return parseCommitSummary(payload);
+}
+
+function parseCommitSummary(payload: unknown): { id: string; parentIds: string[] } {
+  if (!isRecord(payload) || !isRecord(payload.data) || typeof payload.data.id !== 'string') {
+    throw new Error('Unexpected commit response shape.');
+  }
+  const data = payload.data as Record<string, unknown>;
+  const parents = Array.isArray(data.parentIds)
+    ? data.parentIds.filter((value): value is string => typeof value === 'string')
+    : [];
+  return {
+    id: data.id as string,
+    parentIds: parents,
+  };
+}
+
+function layoutActiveEditor(): void {
+  nextTick(() => {
+    if (editorView.value === 'editor') {
+      editorRef.value?.layout();
+    } else if (editorView.value === 'diff') {
+      diffEditorRef.value?.layout();
+    } else if (editorView.value === 'merge') {
+      mergeLeftEditorRef.value?.layout();
+      mergeCenterEditorRef.value?.layout();
+      mergeRightEditorRef.value?.layout();
+    }
+  });
+}
+
+function normalizeNewlines(text: string): string {
+  return text.replace(/\r\n?/g, '\n');
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function findOutlineNodeByPosition(position: OutlinePosition): OutlineNode | null {
