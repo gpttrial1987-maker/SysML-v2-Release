@@ -95,6 +95,35 @@
               />
             </label>
           </div>
+          <div class="library-import">
+            <div class="library-import-header">
+              <h3>Import official library</h3>
+              <button
+                type="button"
+                class="import-button"
+                @click="triggerLibraryImport"
+                :disabled="importInProgress || !libraryImportReady"
+              >
+                {{ importInProgress ? 'Importing…' : 'Import Library' }}
+              </button>
+            </div>
+            <p class="library-import-hint">
+              Load the <code>sysml.library</code> package from the official release repository into the
+              configured project. A new commit will be created by the API.
+            </p>
+            <p
+              v-if="importStatusMessage"
+              class="import-status"
+              :class="importState"
+              aria-live="polite"
+            >
+              {{ importStatusMessage }}
+            </p>
+            <ul v-if="importLogs.length" class="import-progress">
+              <li v-for="(entry, index) in importLogs" :key="index">{{ entry }}</li>
+            </ul>
+            <pre v-if="importErrorDetails" class="import-error-details">{{ importErrorDetails }}</pre>
+          </div>
           <div class="outline-body">
             <p v-if="!outlineReadyToLoad" class="outline-hint">
               Provide the API base URL, project ID, commit ID, and root element ID to load the outline.
@@ -132,90 +161,272 @@
               </li>
             </ul>
             <p v-else class="outline-status">No owned elements were returned.</p>
+            <div
+              v-if="selectedOutlineNode"
+              class="outline-rename-panel"
+              role="group"
+              aria-labelledby="outline-rename-label"
+            >
+              <div class="outline-rename-header">
+                <h3 id="outline-rename-label">Rename element</h3>
+                <p class="outline-rename-hint">Updates the element and all references via the API.</p>
+              </div>
+              <label class="outline-rename-field" for="outline-rename-input">
+                New name
+                <input
+                  id="outline-rename-input"
+                  v-model="renameDraft"
+                  type="text"
+                  :disabled="renameBusy"
+                  spellcheck="false"
+                />
+              </label>
+              <div class="outline-rename-actions">
+                <button
+                  type="button"
+                  class="outline-rename-submit"
+                  @click="submitRename"
+                  :disabled="renameBusy || !renameHasChanges"
+                >
+                  {{ renameBusy ? 'Renaming…' : 'Rename' }}
+                </button>
+                <button
+                  type="button"
+                  class="outline-rename-reset"
+                  @click="resetRenameDraft"
+                  :disabled="renameBusy"
+                >
+                  Reset
+                </button>
+              </div>
+              <p v-if="renameError" class="outline-error">{{ renameError }}</p>
+            </div>
           </div>
         </section>
-        <section class="diff-section">
-          <div class="diff-header">
-            <h2>Diff &amp; Merge</h2>
-            <button type="button" class="diff-clear" @click="clearDiff" :disabled="!diffActive">
-              Clear
-            </button>
+        <section class="wizard-section">
+          <div class="wizard-header">
+            <h2>Modeling Wizards</h2>
+            <p class="wizard-hint">
+              Guided forms create common elements using the configured SysML API commit and append starter text to the editor.
+            </p>
+            <p v-if="!wizardApiReady" class="wizard-warning">
+              Provide the API base URL, project ID, and commit ID before running a wizard.
+            </p>
           </div>
-          <div class="diff-config">
-            <label>
-              Project ID
-              <input
-                v-model="diffProjectId"
-                type="text"
-                placeholder="project-id"
-                spellcheck="false"
-              />
-            </label>
-            <label>
-              Base commit ID
-              <input
-                v-model="diffBaseCommitId"
-                type="text"
-                placeholder="base commit"
-                spellcheck="false"
-              />
-            </label>
-            <label>
-              Target commit ID
-              <input
-                v-model="diffTargetCommitId"
-                type="text"
-                placeholder="target commit"
-                spellcheck="false"
-              />
-            </label>
-            <label>
-              .sysml path
-              <input
-                v-model="diffFilePath"
-                type="text"
-                placeholder="path/to/model.sysml"
-                spellcheck="false"
-              />
-            </label>
-          </div>
-          <div class="diff-actions">
-            <button
-              type="button"
-              class="diff-primary"
-              @click="loadSysmlDiff"
-              :disabled="!diffReadyToLoad || diffLoading"
-            >
-              {{ diffLoading ? 'Loading…' : diffActive ? 'Reload diff' : 'Show diff' }}
-            </button>
-            <button type="button" class="diff-secondary" @click="reconcileActiveMerge" :disabled="!canReconcile">
-              Reconcile IDs
-            </button>
-          </div>
-          <p v-if="!diffReadyToLoad" class="diff-hint">
-            Provide the project, base commit, target commit, and .sysml path to compare revisions.
-          </p>
-          <p v-else-if="diffError" class="diff-error">{{ diffError }}</p>
-          <p v-else-if="diffActive && editorView === 'diff'" class="diff-status">
-            No conflicting changes detected between the selected commits.
-          </p>
-          <p v-else-if="diffActive && editorView === 'merge' && !mergeConflicts.length" class="diff-status">
-            All changes merged using server IDs.
-          </p>
-          <div v-if="mergeConflicts.length" class="diff-conflicts">
-            <h3>Conflicts (server version shown in the middle editor)</h3>
-            <ul>
-              <li v-for="(conflict, index) in mergeConflicts" :key="index">
-                <strong>{{ conflict.baseRangeLabel }}</strong>
-                <p>
-                  Base commit {{ conflict.leftRangeLabel }} · {{ conflict.leftPreview }}
-                </p>
-                <p>
-                  Server {{ conflict.rightRangeLabel }} · {{ conflict.rightPreview }}
-                </p>
-              </li>
-            </ul>
-          </div>
+          <details
+            class="wizard-panel"
+            :open="wizardOpenState.block"
+            @toggle="handleWizardToggle('block', $event)"
+          >
+            <summary>
+              <span>New Block</span>
+              <span class="wizard-summary-meta">Creates a Block Definition</span>
+            </summary>
+            <form class="wizard-form" @submit.prevent="submitBlockWizard">
+              <div class="wizard-field">
+                <label for="block-name">Name</label>
+                <input
+                  id="block-name"
+                  v-model="blockWizard.name"
+                  type="text"
+                  placeholder="WheelController"
+                  autocomplete="off"
+                  spellcheck="false"
+                  required
+                />
+              </div>
+              <div class="wizard-field">
+                <label for="block-short-name">Short name (optional)</label>
+                <input
+                  id="block-short-name"
+                  v-model="blockWizard.shortName"
+                  type="text"
+                  placeholder="WheelCtrl"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </div>
+              <div class="wizard-field">
+                <label for="block-doc">Documentation (optional)</label>
+                <textarea
+                  id="block-doc"
+                  v-model="blockWizard.documentation"
+                  rows="2"
+                  placeholder="Describe the purpose of this block."
+                />
+              </div>
+              <p class="wizard-context">
+                Outline selection ·
+                <span>{{ selectedOutlineNode?.label ?? 'None' }}</span>
+              </p>
+              <div class="wizard-actions">
+                <button
+                  type="submit"
+                  :disabled="!wizardApiReady || !blockFormValid || wizardSubmitting.block"
+                >
+                  {{ wizardSubmitting.block ? 'Creating…' : 'Create block' }}
+                </button>
+                <span v-if="wizardSuccess.block" class="wizard-feedback success">
+                  {{ wizardSuccess.block }}
+                </span>
+                <span v-else-if="wizardError.block" class="wizard-feedback error">
+                  {{ wizardError.block }}
+                </span>
+              </div>
+            </form>
+          </details>
+
+          <details
+            class="wizard-panel"
+            :open="wizardOpenState.requirement"
+            @toggle="handleWizardToggle('requirement', $event)"
+          >
+            <summary>
+              <span>New Requirement</span>
+              <span class="wizard-summary-meta">Creates a Requirement Definition</span>
+            </summary>
+            <form class="wizard-form" @submit.prevent="submitRequirementWizard">
+              <div class="wizard-field">
+                <label for="requirement-name">Name</label>
+                <input
+                  id="requirement-name"
+                  v-model="requirementWizard.name"
+                  type="text"
+                  placeholder="MaintainSpeed"
+                  autocomplete="off"
+                  spellcheck="false"
+                  required
+                />
+              </div>
+              <div class="wizard-field">
+                <label for="requirement-short-name">Short name (optional)</label>
+                <input
+                  id="requirement-short-name"
+                  v-model="requirementWizard.shortName"
+                  type="text"
+                  placeholder="MaintainSpd"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </div>
+              <div class="wizard-field">
+                <label for="requirement-id">Requirement ID</label>
+                <input
+                  id="requirement-id"
+                  v-model="requirementWizard.identifier"
+                  type="text"
+                  placeholder="REQ-001"
+                  autocomplete="off"
+                  spellcheck="false"
+                  required
+                />
+              </div>
+              <div class="wizard-field">
+                <label for="requirement-text">Text</label>
+                <textarea
+                  id="requirement-text"
+                  v-model="requirementWizard.text"
+                  rows="3"
+                  placeholder="Describe the system requirement."
+                  required
+                />
+              </div>
+              <div class="wizard-field">
+                <label for="requirement-doc">Documentation (optional)</label>
+                <textarea
+                  id="requirement-doc"
+                  v-model="requirementWizard.documentation"
+                  rows="2"
+                  placeholder="Internal notes or rationale."
+                />
+              </div>
+              <p class="wizard-context">
+                Outline selection ·
+                <span>{{ selectedOutlineNode?.label ?? 'None' }}</span>
+              </p>
+              <div class="wizard-actions">
+                <button
+                  type="submit"
+                  :disabled="
+                    !wizardApiReady ||
+                    !requirementFormValid ||
+                    wizardSubmitting.requirement
+                  "
+                >
+                  {{ wizardSubmitting.requirement ? 'Creating…' : 'Create requirement' }}
+                </button>
+                <span v-if="wizardSuccess.requirement" class="wizard-feedback success">
+                  {{ wizardSuccess.requirement }}
+                </span>
+                <span v-else-if="wizardError.requirement" class="wizard-feedback error">
+                  {{ wizardError.requirement }}
+                </span>
+              </div>
+            </form>
+          </details>
+
+          <details
+            class="wizard-panel"
+            :open="wizardOpenState.state"
+            @toggle="handleWizardToggle('state', $event)"
+          >
+            <summary>
+              <span>New State</span>
+              <span class="wizard-summary-meta">Creates a State Definition</span>
+            </summary>
+            <form class="wizard-form" @submit.prevent="submitStateWizard">
+              <div class="wizard-field">
+                <label for="state-name">Name</label>
+                <input
+                  id="state-name"
+                  v-model="stateWizard.name"
+                  type="text"
+                  placeholder="Idle"
+                  autocomplete="off"
+                  spellcheck="false"
+                  required
+                />
+              </div>
+              <div class="wizard-field">
+                <label for="state-short-name">Short name (optional)</label>
+                <input
+                  id="state-short-name"
+                  v-model="stateWizard.shortName"
+                  type="text"
+                  placeholder="IdleState"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </div>
+              <div class="wizard-field">
+                <label for="state-doc">Documentation (optional)</label>
+                <textarea
+                  id="state-doc"
+                  v-model="stateWizard.documentation"
+                  rows="2"
+                  placeholder="Describe when this state is active."
+                />
+              </div>
+              <p class="wizard-context">
+                Outline selection ·
+                <span>{{ selectedOutlineNode?.label ?? 'None' }}</span>
+              </p>
+              <div class="wizard-actions">
+                <button
+                  type="submit"
+                  :disabled="!wizardApiReady || !stateFormValid || wizardSubmitting.state"
+                >
+                  {{ wizardSubmitting.state ? 'Creating…' : 'Create state' }}
+                </button>
+                <span v-if="wizardSuccess.state" class="wizard-feedback success">
+                  {{ wizardSuccess.state }}
+                </span>
+                <span v-else-if="wizardError.state" class="wizard-feedback error">
+                  {{ wizardError.state }}
+                </span>
+              </div>
+            </form>
+          </details>
         </section>
         <section>
           <h2>Diagnostics</h2>
@@ -242,7 +453,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue';
 import loader from '@monaco-editor/loader';
 
 import type * as Monaco from 'monaco-editor';
@@ -254,6 +465,20 @@ type MonacoApi = typeof import('monaco-editor');
 type ValidationState = 'idle' | 'running' | 'success' | 'error' | 'info';
 
 type IssueSeverity = 'error' | 'warning' | 'info';
+
+type ImportState = 'idle' | 'running' | 'success' | 'error';
+
+const OFFICIAL_LIBRARY_REPOSITORY_URL = 'https://github.com/Systems-Modeling/SysML-v2-Release.git';
+const OFFICIAL_LIBRARY_REFERENCE = 'main';
+const OFFICIAL_LIBRARY_DIRECTORY = 'sysml.library';
+
+interface ImportOperationStatus {
+  status: 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'unknown';
+  message?: string;
+  logs: string[];
+  result: unknown;
+  error: unknown;
+}
 
 interface NormalizedRange {
   startLineNumber: number;
@@ -309,12 +534,22 @@ interface OutlinePosition {
   column: number;
 }
 
-interface MergeConflictSummary {
-  baseRangeLabel: string;
-  leftRangeLabel: string;
-  rightRangeLabel: string;
-  leftPreview: string;
-  rightPreview: string;
+interface ElementUpsert {
+  classifierId: string;
+  name?: string;
+  documentation?: string;
+  payload: Record<string, unknown>;
+}
+
+type WizardType = 'block' | 'requirement' | 'state';
+interface TextEditPatch {
+  range: NormalizedRange;
+  text: string;
+}
+
+interface RenameRefactorResult {
+  patches: TextEditPatch[];
+  elements: ApiElementRecord[];
 }
 
 const defaultModel = `package Example::DriveUnit {
@@ -356,14 +591,15 @@ const outlineError = ref<string | null>(null);
 const outlineRoot = ref<OutlineNode | null>(null);
 const outlineSelectedKey = ref<string | null>(null);
 
-const editorView = ref<'editor' | 'diff' | 'merge'>('editor');
-const diffProjectId = ref(outlineProjectId.value);
-const diffBaseCommitId = ref(outlineCommitId.value);
-const diffTargetCommitId = ref('');
-const diffFilePath = ref('');
-const diffLoading = ref(false);
-const diffError = ref<string | null>(null);
-const mergeConflicts = ref<MergeConflictSummary[]>([]);
+const importState = ref<ImportState>('idle');
+const importStatusMessage = ref('');
+const importLogs = ref<string[]>([]);
+const importErrorDetails = ref<string | null>(null);
+const importAbortController = ref<AbortController | null>(null);
+
+const libraryImportReady = computed(
+  () => sysmlApiBaseUrl.value.trim().length > 0 && outlineProjectId.value.trim().length > 0,
+);
 
 const outlineReadyToLoad = computed(
   () =>
@@ -374,6 +610,9 @@ const outlineReadyToLoad = computed(
 );
 
 const outlineItems = computed<OutlineListItem[]>(() => {
+  // track updates to existing outline nodes without rebuilding the tree
+  // eslint-disable-next-line no-unused-expressions
+  outlineRevision.value;
   const rootNode = outlineRoot.value;
   if (!rootNode) {
     return [];
@@ -418,6 +657,7 @@ let mergeResolvedModel: Monaco.editor.ITextModel | null = null;
 let mergeTargetModel: Monaco.editor.ITextModel | null = null;
 
 const isValidating = computed(() => status.value === 'running');
+const importInProgress = computed(() => importState.value === 'running');
 const lastValidated = computed(() =>
   lastValidatedAt.value ? lastValidatedAt.value.toLocaleTimeString() : '',
 );
@@ -438,8 +678,26 @@ const outlineNodesWithRange: OutlineNode[] = [];
 const outlineNodesByElementId = new Map<string, OutlineNode[]>();
 const outlineElementCache = new Map<string, ApiElementRecord>();
 const outlineOwnedCache = new Map<string, ApiElementRecord[]>();
-let diffAbortController: AbortController | null = null;
-const diffElementCache = new Map<string, ApiElementRecord>();
+const outlineRevision = ref(0);
+const renameDraft = ref('');
+const renameBusy = ref(false);
+const renameError = ref<string | null>(null);
+
+const selectedOutlineNode = computed(() =>
+  outlineSelectedKey.value ? outlineNodeIndex.get(outlineSelectedKey.value) ?? null : null,
+);
+
+const renameHasChanges = computed(() => {
+  const node = selectedOutlineNode.value;
+  if (!node) {
+    return false;
+  }
+  const draft = renameDraft.value.trim();
+  if (!draft) {
+    return false;
+  }
+  return draft !== node.label.trim();
+});
 
 onMounted(async () => {
   loader.config({
@@ -572,12 +830,12 @@ watch(
   { immediate: true },
 );
 
-watch([diffProjectId, diffBaseCommitId, diffTargetCommitId, diffFilePath], () => {
-  diffError.value = null;
-});
-
-watch(editorView, () => {
-  layoutActiveEditor();
+watch([sysmlApiBaseUrl, outlineProjectId], () => {
+  if (importAbortController.value) {
+    importAbortController.value.abort();
+    importAbortController.value = null;
+  }
+  resetImportState();
 });
 
 onBeforeUnmount(() => {
@@ -591,6 +849,10 @@ onBeforeUnmount(() => {
   if (outlineAbortController) {
     outlineAbortController.abort();
     outlineAbortController = null;
+  }
+  if (importAbortController.value) {
+    importAbortController.value.abort();
+    importAbortController.value = null;
   }
   for (const disposable of modelDisposables) {
     disposable.dispose();
@@ -633,6 +895,377 @@ onBeforeUnmount(() => {
   }
 });
 
+function triggerLibraryImport() {
+  if (importInProgress.value) {
+    return;
+  }
+  importOfficialLibrary().catch((error) => {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      return;
+    }
+    console.error('Library import error', error);
+  });
+}
+
+async function importOfficialLibrary() {
+  const baseUrl = sysmlApiBaseUrl.value.trim();
+  const projectId = outlineProjectId.value.trim();
+
+  if (!baseUrl || !projectId) {
+    importState.value = 'error';
+    importStatusMessage.value = 'API base URL and project ID are required to import the library.';
+    importErrorDetails.value = null;
+    return;
+  }
+
+  if (importAbortController.value) {
+    importAbortController.value.abort();
+    importAbortController.value = null;
+  }
+
+  const controller = new AbortController();
+  importAbortController.value = controller;
+
+  importLogs.value = [];
+  importErrorDetails.value = null;
+  importState.value = 'running';
+  importStatusMessage.value = 'Submitting library import request…';
+  appendImportLog('Requesting import from official SysML v2 release repository…');
+
+  const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+  const targetUrl = `${normalizedBaseUrl}/projects/${encodeURIComponent(projectId)}/library-imports`;
+
+  try {
+    const response = await fetch(targetUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        source: {
+          type: 'git',
+          repositoryUrl: OFFICIAL_LIBRARY_REPOSITORY_URL,
+          directory: OFFICIAL_LIBRARY_DIRECTORY,
+          reference: OFFICIAL_LIBRARY_REFERENCE,
+        },
+      }),
+      signal: controller.signal,
+    });
+
+    const payload = await safeJson(response);
+    const location = response.headers.get('location');
+
+    if (!response.ok && response.status !== 202) {
+      const message =
+        isRecord(payload) && typeof payload.message === 'string'
+          ? payload.message
+          : `Import request failed with status ${response.status}`;
+      importState.value = 'error';
+      importStatusMessage.value = message;
+      importErrorDetails.value = formatImportErrorDetail(payload);
+      return;
+    }
+
+    if (response.status === 202 && location) {
+      appendImportLog('Import queued on server. Monitoring progress…');
+      const statusUrl = resolveStatusUrl(location, normalizedBaseUrl);
+      await pollImportStatus(statusUrl, controller.signal);
+      return;
+    }
+
+    appendImportLog('Import completed.');
+    const successMessage =
+      extractImportMessage(payload) ?? 'Library import completed successfully.';
+    importStatusMessage.value = successMessage;
+    importState.value = 'success';
+    const summary = extractImportSummary(payload);
+    if (summary) {
+      appendImportLog(summary);
+    }
+  } catch (error) {
+    if (controller.signal.aborted) {
+      return;
+    }
+    importState.value = 'error';
+    importStatusMessage.value =
+      error instanceof Error ? error.message : 'Library import failed.';
+    importErrorDetails.value = formatImportErrorDetail(error);
+    throw error;
+  } finally {
+    if (importAbortController.value === controller) {
+      importAbortController.value = null;
+    }
+  }
+}
+
+async function pollImportStatus(statusUrl: string, signal: AbortSignal) {
+  let attempt = 0;
+  const maxAttempts = 120;
+
+  while (attempt < maxAttempts) {
+    if (signal.aborted) {
+      return;
+    }
+
+    if (attempt > 0) {
+      await sleep(Math.min(2000, 500 + attempt * 250));
+      if (signal.aborted) {
+        return;
+      }
+    }
+
+    attempt += 1;
+    const response = await fetch(statusUrl, { signal });
+
+    if (response.status === 204) {
+      importState.value = 'success';
+      importStatusMessage.value = 'Library import completed successfully.';
+      return;
+    }
+
+    const payload = await safeJson(response);
+
+    if (!response.ok) {
+      const message =
+        isRecord(payload) && typeof payload.message === 'string'
+          ? payload.message
+          : `Failed to retrieve import status (status ${response.status}).`;
+      importState.value = 'error';
+      importStatusMessage.value = message;
+      importErrorDetails.value = formatImportErrorDetail(payload);
+      return;
+    }
+
+    const statusInfo = interpretImportStatus(payload);
+
+    if (statusInfo.logs) {
+      for (const entry of statusInfo.logs) {
+        appendImportLog(entry);
+      }
+    }
+
+    if (statusInfo.message) {
+      importStatusMessage.value = statusInfo.message;
+    }
+
+    if (statusInfo.status === 'succeeded') {
+      importState.value = 'success';
+      const message =
+        extractImportMessage(statusInfo.result) ??
+        statusInfo.message ??
+        'Library import completed successfully.';
+      importStatusMessage.value = message;
+      const summary = extractImportSummary(statusInfo.result);
+      if (summary) {
+        appendImportLog(summary);
+      }
+      return;
+    }
+
+    if (statusInfo.status === 'failed' || statusInfo.status === 'cancelled') {
+      importState.value = 'error';
+      importStatusMessage.value =
+        statusInfo.message ??
+        (statusInfo.status === 'cancelled'
+          ? 'Library import was cancelled by the server.'
+          : 'Library import failed.');
+      importErrorDetails.value = formatImportErrorDetail(
+        statusInfo.error ?? statusInfo.result ?? payload,
+      );
+      return;
+    }
+
+    importState.value = 'running';
+  }
+
+  throw new Error('Timed out while waiting for library import to finish.');
+}
+
+function interpretImportStatus(payload: unknown): ImportOperationStatus {
+  if (!isRecord(payload)) {
+    return { status: 'unknown', logs: [], result: null, error: null };
+  }
+
+  const statusCandidate = firstString(
+    payload.status,
+    payload.state,
+    payload.phase,
+    payload.stage,
+  );
+  const done = payload.done === true || payload.completed === true || payload.success === true;
+  const failed = payload.failed === true || payload.error != null || payload.cancelled === true;
+
+  let status: 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'unknown' = 'unknown';
+  if (statusCandidate) {
+    const normalized = statusCandidate.toLowerCase();
+    if (['pending', 'queued', 'accepted', 'waiting'].includes(normalized)) {
+      status = 'pending';
+    } else if (['running', 'in_progress', 'processing', 'executing', 'working'].includes(normalized)) {
+      status = 'running';
+    } else if (['succeeded', 'success', 'completed', 'complete', 'done'].includes(normalized)) {
+      status = 'succeeded';
+    } else if (['failed', 'error', 'aborted'].includes(normalized)) {
+      status = 'failed';
+    } else if (['cancelled', 'canceled'].includes(normalized)) {
+      status = 'cancelled';
+    } else {
+      status = 'running';
+    }
+  }
+
+  if (done && !failed) {
+    status = 'succeeded';
+  } else if (failed) {
+    status = payload.cancelled === true ? 'cancelled' : 'failed';
+  }
+
+  const message = firstString(
+    payload.message,
+    payload.detail,
+    payload.description,
+    payload.statusMessage,
+    payload.info,
+    payload.progress?.message,
+  );
+
+  const logs: string[] = [];
+  const logSources = [payload.logs, payload.history, payload.messages];
+  for (const source of logSources) {
+    if (Array.isArray(source)) {
+      for (const entry of source) {
+        if (typeof entry === 'string') {
+          logs.push(entry);
+        } else if (isRecord(entry)) {
+          const label = firstString(entry.message, entry.detail, entry.description, entry.label);
+          if (label) {
+            logs.push(label);
+          }
+        }
+      }
+    }
+  }
+
+  if (isRecord(payload.progress) && Array.isArray(payload.progress.steps)) {
+    for (const step of payload.progress.steps) {
+      if (typeof step === 'string') {
+        logs.push(step);
+      } else if (isRecord(step)) {
+        const label = firstString(step.message, step.detail, step.description, step.label);
+        if (label) {
+          logs.push(label);
+        }
+      }
+    }
+  }
+
+  const result = payload.result ?? payload.data ?? payload.output ?? payload.payload ?? null;
+  const error = payload.error ?? payload.failure ?? payload.reason ?? payload.details?.error ?? null;
+
+  return { status, message, logs, result, error };
+}
+
+function resetImportState() {
+  importState.value = 'idle';
+  importStatusMessage.value = '';
+  importLogs.value = [];
+  importErrorDetails.value = null;
+}
+
+function appendImportLog(message: string) {
+  const normalized = message.trim();
+  if (!normalized) {
+    return;
+  }
+  const entries = importLogs.value;
+  if (entries.includes(normalized)) {
+    return;
+  }
+  entries.push(normalized);
+  if (entries.length > 25) {
+    entries.splice(0, entries.length - 25);
+  }
+}
+
+function normalizeBaseUrl(value: string): string {
+  return value.replace(/\/+$/, '');
+}
+
+function resolveStatusUrl(location: string, baseUrl: string): string {
+  if (/^https?:/i.test(location)) {
+    return location;
+  }
+  if (location.startsWith('/')) {
+    return `${baseUrl}${location}`;
+  }
+  return `${baseUrl}/${location}`;
+}
+
+function extractImportSummary(payload: unknown): string | null {
+  if (!isRecord(payload)) {
+    return null;
+  }
+  const data = isRecord(payload.data) ? (payload.data as Record<string, unknown>) : payload;
+  const commitId = typeof data.id === 'string' ? data.id : undefined;
+  const message = firstString(
+    data.message,
+    data.commitMessage,
+    data.description,
+    data.detail,
+  );
+  if (commitId && message) {
+    return `Commit ${commitId}: ${message}`;
+  }
+  if (commitId) {
+    return `Commit ${commitId} created.`;
+  }
+  return message ?? null;
+}
+
+function extractImportMessage(payload: unknown): string | undefined {
+  if (typeof payload === 'string') {
+    return payload;
+  }
+  if (!isRecord(payload)) {
+    return undefined;
+  }
+  const summary = extractImportSummary(payload);
+  if (summary) {
+    return `Library import completed. ${summary}`;
+  }
+  return firstString(payload.message, payload.detail, payload.description, payload.statusMessage);
+}
+
+function formatImportErrorDetail(value: unknown): string | null {
+  if (!value) {
+    return null;
+  }
+  if (value instanceof Error) {
+    return value.stack ?? value.message;
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (isRecord(value)) {
+    const message = firstString(value.message, value.detail, value.description);
+    if (message) {
+      try {
+        return `${message}\n${JSON.stringify(value, null, 2)}`;
+      } catch (error) {
+        return message;
+      }
+    }
+  }
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch (error) {
+    return String(value);
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function refreshOutline(): Promise<void> {
   const config = getOutlineConfig();
   const elementId = outlineRootElementId.value.trim();
@@ -674,7 +1307,13 @@ async function refreshOutline(): Promise<void> {
     rebuildOutlineIndexes(rootNode);
 
     let nextSelectionKey: string | null = null;
-    if (previousElementId) {
+    if (outlinePendingFocusElementId) {
+      const focusCandidates = outlineNodesByElementId.get(outlinePendingFocusElementId);
+      if (focusCandidates && focusCandidates.length) {
+        nextSelectionKey = focusCandidates[0].key;
+      }
+    }
+    if (!nextSelectionKey && previousElementId) {
       const candidates = outlineNodesByElementId.get(previousElementId);
       if (candidates && candidates.length) {
         nextSelectionKey = candidates[0].key;
@@ -684,6 +1323,7 @@ async function refreshOutline(): Promise<void> {
       nextSelectionKey = rootNode.key;
     }
     outlineSelectedKey.value = nextSelectionKey;
+    outlinePendingFocusElementId = null;
   } catch (error) {
     if (signal.aborted) {
       return;
@@ -692,6 +1332,7 @@ async function refreshOutline(): Promise<void> {
     outlineRoot.value = null;
     rebuildOutlineIndexes(null);
     outlineSelectedKey.value = null;
+    outlinePendingFocusElementId = null;
   } finally {
     if (outlineAbortController === controller) {
       outlineLoading.value = false;
@@ -707,6 +1348,7 @@ function resetOutlineState() {
   outlineLoading.value = false;
   rebuildOutlineIndexes(null);
   applyOutlineHighlight(undefined);
+  outlineRevision.value += 1;
 }
 
 function getOutlineConfig(): OutlineConfig | null {
@@ -798,14 +1440,328 @@ async function fetchOwnedElementRecords(
   return records;
 }
 
-function buildCommitElementUrl(
-  baseUrl: string,
-  projectId: string,
-  commitId: string,
-  elementId?: string,
-  suffix?: string,
-) {
-  let url = `${baseUrl}/projects/${encodeURIComponent(projectId)}/commits/${encodeURIComponent(commitId)}/elements`;
+async function submitRename(): Promise<void> {
+  const node = selectedOutlineNode.value;
+  if (!node) {
+    return;
+  }
+  const proposed = renameDraft.value.trim();
+  if (!proposed) {
+    renameError.value = 'Provide a non-empty name.';
+    renameDraft.value = node.label;
+    return;
+  }
+  if (proposed === node.label.trim()) {
+    renameDraft.value = node.label;
+    return;
+  }
+
+  const config = getOutlineConfig();
+  if (!config) {
+    renameError.value = 'Provide API configuration before renaming.';
+    return;
+  }
+
+  renameBusy.value = true;
+  renameError.value = null;
+
+  const revertOutline = applyOutlineRenameOptimistic(node.id, proposed);
+
+  try {
+    const result = await requestRenameRefactor(node.id, proposed, config);
+    if (result.elements.length) {
+      updateOutlineFromRecords(result.elements);
+      const refreshed = selectedOutlineNode.value;
+      if (refreshed) {
+        renameDraft.value = refreshed.label;
+      }
+    } else {
+      const cached = outlineElementCache.get(node.id);
+      if (cached) {
+        outlineElementCache.set(node.id, { ...cached, name: proposed });
+      }
+      renameDraft.value = proposed;
+    }
+    if (result.patches.length) {
+      applyTextPatches(result.patches);
+    }
+  } catch (error) {
+    revertOutline();
+    const current = selectedOutlineNode.value;
+    renameDraft.value = current ? current.label : '';
+    if (!isAbortError(error)) {
+      renameError.value = error instanceof Error ? error.message : 'Rename failed.';
+    }
+    return;
+  } finally {
+    renameBusy.value = false;
+  }
+}
+
+function resetRenameDraft(): void {
+  const node = selectedOutlineNode.value;
+  renameDraft.value = node ? node.label : '';
+  renameError.value = null;
+}
+
+async function requestRenameRefactor(
+  elementId: string,
+  newName: string,
+  config: OutlineConfig,
+): Promise<RenameRefactorResult> {
+  const url = `${config.baseUrl}/projects/${encodeURIComponent(config.projectId)}/commits/${encodeURIComponent(
+    config.commitId,
+  )}/refactorings/rename`;
+  const controller = new AbortController();
+  const payload = await requestJson(url, controller.signal, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      elementId,
+      newName,
+      includeReferences: true,
+      updateReferences: true,
+    }),
+  });
+  if (!payload) {
+    return { patches: [], elements: [] };
+  }
+  return parseRenameResponse(payload);
+}
+
+function parseRenameResponse(payload: unknown): RenameRefactorResult {
+  if (!payload) {
+    return { patches: [], elements: [] };
+  }
+  if (!isRecord(payload)) {
+    throw new Error('Unexpected rename response shape.');
+  }
+  const root = isRecord(payload.data) ? (payload.data as Record<string, unknown>) : payload;
+  const container = isRecord(root.result) ? (root.result as Record<string, unknown>) : root;
+
+  const patchSources: unknown[] = [];
+  for (const key of ['patches', 'textEdits', 'edits', 'textChanges']) {
+    const candidate = container[key];
+    if (Array.isArray(candidate)) {
+      patchSources.push(...candidate);
+    }
+  }
+  const patches: TextEditPatch[] = [];
+  for (const entry of patchSources) {
+    const normalized = normalizeTextPatch(entry);
+    if (normalized) {
+      patches.push(normalized);
+    }
+  }
+
+  const elementSources: unknown[] = [];
+  for (const key of ['element', 'updatedElement', 'targetElement']) {
+    const candidate = container[key];
+    if (candidate) {
+      elementSources.push(candidate);
+    }
+  }
+  const list = container.updatedElements;
+  if (Array.isArray(list)) {
+    elementSources.push(...list);
+  }
+
+  const elements: ApiElementRecord[] = [];
+  for (const entry of elementSources) {
+    const normalized = normalizeElementRecordFromResponse(entry);
+    if (normalized) {
+      elements.push(normalized);
+    }
+  }
+
+  return { patches, elements };
+}
+
+function normalizeElementRecordFromResponse(value: unknown): ApiElementRecord | null {
+  if (!value) {
+    return null;
+  }
+  if (isRecord(value) && isRecord(value.data)) {
+    try {
+      return parseElementRecord({ data: value.data });
+    } catch (error) {
+      return null;
+    }
+  }
+  if (!isRecord(value) || typeof value.id !== 'string') {
+    return null;
+  }
+  return sanitizeElementRecord({
+    id: value.id,
+    name: typeof value.name === 'string' ? value.name : undefined,
+    classifierId: typeof value.classifierId === 'string' ? value.classifierId : undefined,
+    documentation: typeof value.documentation === 'string' ? value.documentation : undefined,
+    payload: isRecord(value.payload) ? (value.payload as Record<string, unknown>) : undefined,
+  });
+}
+
+function normalizeTextPatch(value: unknown): TextEditPatch | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const text = firstString(value.newText, value.text, value.replacementText, value.replacement, value.insertText, value.value);
+  if (typeof text !== 'string') {
+    return null;
+  }
+  const rangeSource = isRecord(value.range) ? (value.range as Record<string, unknown>) : value;
+  const start = extractPosition(rangeSource, ['start', 'from', 'begin']);
+  const end = extractPosition(rangeSource, ['end', 'to', 'finish']);
+  if (!start || !end) {
+    return null;
+  }
+  return {
+    range: {
+      startLineNumber: start.line,
+      startColumn: start.column,
+      endLineNumber: end.line,
+      endColumn: end.column,
+    },
+    text,
+  };
+}
+
+function extractPosition(source: Record<string, unknown>, keys: string[]): OutlinePosition | null {
+  for (const key of keys) {
+    const line = toInteger(
+      source[`${key}LineNumber`] ??
+        source[`${key}Line`] ??
+        source[`${key}Row`] ??
+        (isRecord(source[key]) ? (source[key] as Record<string, unknown>).line : undefined) ??
+        (isRecord(source[key]) ? (source[key] as Record<string, unknown>).lineNumber : undefined) ??
+        (isRecord(source[key]) ? (source[key] as Record<string, unknown>).row : undefined),
+    );
+    const column = toInteger(
+      source[`${key}Column`] ??
+        source[`${key}Character`] ??
+        source[`${key}Char`] ??
+        source[`${key}Offset`] ??
+        (isRecord(source[key]) ? (source[key] as Record<string, unknown>).column : undefined) ??
+        (isRecord(source[key]) ? (source[key] as Record<string, unknown>).character : undefined) ??
+        (isRecord(source[key]) ? (source[key] as Record<string, unknown>).char : undefined) ??
+        (isRecord(source[key]) ? (source[key] as Record<string, unknown>).offset : undefined),
+    );
+    if (line !== null && column !== null) {
+      return { line, column };
+    }
+    const nested = source[key];
+    if (isRecord(nested)) {
+      const nestedLine = toInteger(nested.line ?? nested.lineNumber ?? nested.row);
+      const nestedColumn = toInteger(nested.column ?? nested.character ?? nested.char ?? nested.offset);
+      if (nestedLine !== null && nestedColumn !== null) {
+        return { line: nestedLine, column: nestedColumn };
+      }
+    }
+  }
+  return null;
+}
+
+function toInteger(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const normalized = Math.trunc(value);
+    return normalized >= 1 ? normalized : 1;
+  }
+  if (typeof value === 'string' && value.trim().length) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      const normalized = Math.trunc(parsed);
+      return normalized >= 1 ? normalized : 1;
+    }
+  }
+  return null;
+}
+
+function applyOutlineRenameOptimistic(elementId: string, label: string): () => void {
+  const nodes = outlineNodesByElementId.get(elementId) ?? [];
+  const previousNodes = nodes.map((node) => ({ node, label: node.label }));
+  const previousRecord = outlineElementCache.get(elementId);
+  if (nodes.length) {
+    for (const entry of previousNodes) {
+      entry.node.label = label;
+    }
+    outlineRevision.value += 1;
+  }
+  if (previousRecord) {
+    outlineElementCache.set(elementId, { ...previousRecord, name: label });
+  }
+  return () => {
+    if (previousRecord) {
+      outlineElementCache.set(elementId, previousRecord);
+    }
+    for (const entry of previousNodes) {
+      entry.node.label = entry.label;
+    }
+    if (previousNodes.length) {
+      outlineRevision.value += 1;
+    }
+  };
+}
+
+function updateOutlineFromRecords(records: ApiElementRecord[]): void {
+  if (!records.length) {
+    return;
+  }
+  let dirty = false;
+  for (const record of records) {
+    outlineElementCache.set(record.id, record);
+    const nodes = outlineNodesByElementId.get(record.id);
+    if (!nodes || !nodes.length) {
+      continue;
+    }
+    const nextLabel = computeOutlineLabel(record);
+    const nextType = computeOutlineType(record);
+    const nextRange = extractOutlineRange(record);
+    for (const node of nodes) {
+      node.label = nextLabel;
+      node.type = nextType;
+      node.range = nextRange;
+    }
+    dirty = true;
+  }
+  if (dirty) {
+    outlineRevision.value += 1;
+  }
+}
+
+function applyTextPatches(edits: TextEditPatch[]): void {
+  if (!edits.length || !editorRef.value || !monacoApi) {
+    return;
+  }
+  const editor = editorRef.value;
+  const operations = edits
+    .map((edit) => ({
+      range: toMonacoRange(edit.range, monacoApi!),
+      text: edit.text,
+      forceMoveMarkers: true,
+    }))
+    .sort((a, b) => {
+      if (a.range.startLineNumber === b.range.startLineNumber) {
+        return b.range.startColumn - a.range.startColumn;
+      }
+      return b.range.startLineNumber - a.range.startLineNumber;
+    });
+  const selections = editor.getSelections();
+  editor.pushUndoStop();
+  editor.executeEdits('rename-refactor', operations);
+  editor.pushUndoStop();
+  if (selections) {
+    editor.setSelections(selections);
+  }
+  scheduleValidation(true);
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError';
+}
+
+function buildElementUrl(config: OutlineConfig, elementId?: string, suffix?: string) {
+  let url = `${config.baseUrl}/projects/${encodeURIComponent(config.projectId)}/commits/${encodeURIComponent(
+    config.commitId,
+  )}/elements`;
   if (elementId) {
     url += `/${encodeURIComponent(elementId)}`;
   }
@@ -815,8 +1771,12 @@ function buildCommitElementUrl(
   return url;
 }
 
-async function requestJson(url: string, signal: AbortSignal): Promise<unknown> {
-  const response = await fetch(url, { signal });
+async function requestJson(url: string, signal: AbortSignal, init?: RequestInit): Promise<unknown> {
+  const headers = new Headers(init?.headers ?? undefined);
+  if (!headers.has('Accept')) {
+    headers.set('Accept', 'application/json');
+  }
+  const response = await fetch(url, { ...init, signal, headers });
   if (response.status === 204) {
     if (!response.ok) {
       throw new Error(`Request failed with status ${response.status}`);
@@ -1015,6 +1975,7 @@ function rebuildOutlineIndexes(root: OutlineNode | null) {
     }
   };
   visit(root);
+  outlineRevision.value += 1;
 }
 
 function handleOutlineClick(node: OutlineNode) {
@@ -1080,6 +2041,15 @@ watch(outlineSelectedKey, (key) => {
     });
   }
 });
+
+watch(
+  selectedOutlineNode,
+  (node) => {
+    renameError.value = null;
+    renameDraft.value = node ? node.label : '';
+  },
+  { immediate: true },
+);
 
 function formatOutlineType(type?: string): string {
   if (!type) {
@@ -1746,7 +2716,10 @@ function applyMarkers(issues: NormalizedIssue[]) {
     startColumn: issue.range.startColumn,
     endLineNumber: issue.range.endLineNumber,
     endColumn: issue.range.endColumn,
-    tags: issue.quickFixes.length ? [monacoApi!.MarkerTag.Unnecessary] : undefined,
+    tags:
+      issue.quickFixes.length || inferImportCandidates(issue).length
+        ? [monacoApi!.MarkerTag.Unnecessary]
+        : undefined,
     relatedInformation: issue.elementId
       ? [
           {
@@ -1868,14 +2841,19 @@ function registerLanguageProviders(monaco: MonacoApi) {
 
           const fixes = issue.quickFixes.length
             ? issue.quickFixes
-            : [
-                {
-                  title: 'Review issue in validation service',
-                },
-              ];
+            : deriveHeuristicFixes(issue, model);
 
-          for (let idx = 0; idx < fixes.length; idx += 1) {
-            const fix = fixes[idx];
+          const fallbackFixes =
+            fixes.length > 0
+              ? fixes
+              : [
+                  {
+                    title: 'Review issue in validation service',
+                  },
+                ];
+
+          for (let idx = 0; idx < fallbackFixes.length; idx += 1) {
+            const fix = fallbackFixes[idx];
             const editRange = toMonacoRange(fix.range ?? issue.range, monaco);
             const edit =
               typeof fix.replacementText === 'string'
@@ -2160,6 +3138,139 @@ function normalizeFixes(raw: unknown): NormalizedFix[] {
   return fixes;
 }
 
+function deriveHeuristicFixes(
+  issue: NormalizedIssue,
+  model: Monaco.editor.ITextModel,
+): NormalizedFix[] {
+  const candidates = inferImportCandidates(issue);
+  if (!candidates.length) {
+    return [];
+  }
+
+  const insertionPoint = computeImportInsertionRange(model);
+  if (!insertionPoint) {
+    return [];
+  }
+
+  const eol = model.getEOL();
+  const fixes: NormalizedFix[] = [];
+
+  for (const identifier of candidates) {
+    if (modelHasImport(model, identifier)) {
+      continue;
+    }
+
+    fixes.push({
+      title: `Insert public import ${identifier}`,
+      replacementText: `public import ${identifier};${eol}`,
+      range: { ...insertionPoint },
+    });
+
+    fixes.push({
+      title: `Insert private import ${identifier}`,
+      replacementText: `private import ${identifier};${eol}`,
+      range: { ...insertionPoint },
+    });
+  }
+
+  return fixes;
+}
+
+function inferImportCandidates(issue: NormalizedIssue): string[] {
+  const message = issue.message;
+  const matches: string[] = [];
+
+  const patterns = [
+    /missing\s+(?:public\s+)?import(?:\s+(?:for|of))?\s+(?:element\s+)?['"]?([\w.:]+)['"]?/i,
+    /unresolved\s+(?:reference|ref(?:erence)?|identifier|element)\s+(?:to|for|of)?\s*(?:element\s+)?['"]?([\w.:]+)['"]?/i,
+    /cannot\s+resolve\s+(?:reference|ref(?:erence)?|identifier|element)\s+(?:to|for|of)?\s*(?:element\s+)?['"]?([\w.:]+)['"]?/i,
+    /no\s+import\s+(?:for|of)\s+(?:element\s+)?['"]?([\w.:]+)['"]?/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = pattern.exec(message);
+    if (match && match[1]) {
+      const sanitized = sanitizeImportCandidate(match[1]);
+      if (sanitized) {
+        matches.push(sanitized);
+      }
+    }
+  }
+
+  return Array.from(new Set(matches));
+}
+
+function sanitizeImportCandidate(value: string): string | null {
+  const trimmed = value.trim().replace(/[.;:]+$/, '').replace(/^:+/, '');
+  if (!trimmed) {
+    return null;
+  }
+  return trimmed;
+}
+
+function computeImportInsertionRange(model: Monaco.editor.ITextModel): NormalizedRange | null {
+  const lineCount = model.getLineCount();
+  if (lineCount === 0) {
+    return {
+      startLineNumber: 1,
+      startColumn: 1,
+      endLineNumber: 1,
+      endColumn: 1,
+    };
+  }
+
+  let insertBefore = 1;
+
+  for (let line = 1; line <= lineCount; line += 1) {
+    const content = model.getLineContent(line);
+    const trimmed = content.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+    if (trimmed.startsWith('--')) {
+      insertBefore = line + 1;
+      continue;
+    }
+    if (/^(?:public|private)?\s*import\b/i.test(trimmed)) {
+      insertBefore = line + 1;
+      continue;
+    }
+    if (/^package\b/i.test(trimmed)) {
+      insertBefore = line + 1;
+      continue;
+    }
+    break;
+  }
+
+  if (insertBefore > lineCount) {
+    const lastLine = lineCount;
+    const column = model.getLineLength(lastLine) + 1;
+    return {
+      startLineNumber: lastLine,
+      startColumn: column,
+      endLineNumber: lastLine,
+      endColumn: column,
+    };
+  }
+
+  return {
+    startLineNumber: insertBefore,
+    startColumn: 1,
+    endLineNumber: insertBefore,
+    endColumn: 1,
+  };
+}
+
+function modelHasImport(model: Monaco.editor.ITextModel, identifier: string): boolean {
+  const escaped = escapeRegExp(identifier);
+  const regex = new RegExp(`\\b(?:public|private)?\\s*import\\s+${escaped}\\b`);
+  return regex.test(model.getValue());
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function toMarkerSeverity(monaco: MonacoApi, severity: IssueSeverity) {
   switch (severity) {
     case 'warning':
@@ -2172,10 +3283,14 @@ function toMarkerSeverity(monaco: MonacoApi, severity: IssueSeverity) {
 }
 
 function badgeFixes(issue: NormalizedIssue): string[] {
-  if (issue.quickFixes.length === 0) {
-    return ['Quick fix available on hover'];
+  if (issue.quickFixes.length) {
+    return issue.quickFixes.map((fix) => fix.title);
   }
-  return issue.quickFixes.map((fix) => fix.title);
+  const inferred = inferImportCandidates(issue);
+  if (inferred.length) {
+    return inferred.map((identifier) => `Insert public import ${identifier}`);
+  }
+  return ['Quick fix available on hover'];
 }
 
 function severityLabel(severity: IssueSeverity) {
